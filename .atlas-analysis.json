@@ -1,0 +1,130 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Spacelabs FirestoreORM",
+  "projectDescription": "Type-safe Firestore ORM with validation, soft deletes, lifecycle hooks, and powerful query builder built for Firebase Admin SDK.",
+  "theme": "aspen",
+  "primaryColor": "#848c8e",
+  "lightColor": "#11161e",
+  "darkColor": "#cfd0d2",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/repository-pattern",
+              "concepts/schema-validation",
+              "concepts/soft-deletes",
+              "concepts/lifecycle-hooks"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/crud-operations",
+              "guides/queries",
+              "guides/pagination",
+              "guides/transactions",
+              "guides/subcollections",
+              "guides/dot-notation",
+              "guides/bulk-operations",
+              "guides/streaming",
+              "guides/realtime"
+            ]
+          },
+          {
+            "group": "Framework Integration",
+            "pages": [
+              "frameworks/express",
+              "frameworks/nestjs"
+            ]
+          },
+          {
+            "group": "Best Practices",
+            "pages": [
+              "best-practices/optimization",
+              "best-practices/error-handling",
+              "best-practices/performance-costs"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core Classes",
+            "pages": [
+              "api/firestore-repository",
+              "api/query-builder"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/validation",
+              "api/error-handling",
+              "api/dot-notation"
+            ]
+          },
+          {
+            "group": "Types & Errors",
+            "pages": [
+              "api/types",
+              "api/errors"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Type-safe TypeScript API with full inference",
+    "Zod schema validation for data integrity",
+    "Built-in soft delete functionality",
+    "Lifecycle hooks for custom logic",
+    "Powerful chainable query builder",
+    "Transaction support with ACID guarantees",
+    "Subcollection management",
+    "Dot notation for nested field updates",
+    "Bulk operations with automatic batching",
+    "Real-time subscriptions and streaming"
+  ],
+  "publicApiSurface": [
+    "FirestoreRepository",
+    "FirestoreRepository.withSchema()",
+    "FirestoreQueryBuilder",
+    "create()",
+    "getById()",
+    "update()",
+    "delete()",
+    "softDelete()",
+    "restore()",
+    "query()",
+    "bulkCreate()",
+    "bulkUpdate()",
+    "bulkDelete()",
+    "runInTransaction()",
+    "subcollection()",
+    "on() - lifecycle hooks",
+    "NotFoundError",
+    "ValidationError",
+    "ConflictError",
+    "FirestoreIndexError",
+    "errorHandler",
+    "makeValidator()",
+    "isDotNotation()",
+    "expandDotNotation()",
+    "mergeDotNotationUpdate()"
+  ]
+}
