@@ -17,7 +17,7 @@ TypeScript provides compile-time type safety, but runtime data can come from any
 FirestoreORM uses [Zod](https://zod.dev) for schema validation. When you create a repository with a schema, all create and update operations automatically validate data against your schema:
 
 ```typescript
-import { FirestoreRepository } from '@spacelabs/firestore-orm';
+import { FirestoreRepository } from '@spacelabstech/firestoreorm';
 import { z } from 'zod';
 
 const userSchema = z.object({
@@ -313,7 +313,7 @@ The `ValidationError` class contains:
 ### Basic Error Handling
 
 ```typescript
-import { ValidationError } from '@spacelabs/firestore-orm';
+import { ValidationError } from '@spacelabstech/firestoreorm';
 
 try {
   await userRepo.create({
@@ -365,7 +365,7 @@ try {
 ### API Response Example
 
 ```typescript
-import { ValidationError } from '@spacelabs/firestore-orm';
+import { ValidationError } from '@spacelabstech/firestoreorm';
 
 app.post('/api/users', async (req, res) => {
   try {

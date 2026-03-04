@@ -28,7 +28,7 @@ Firebase's native SDK is powerful but verbose. Simple operations require multipl
 The simplest way to create a repository is to instantiate `FirestoreRepository` with your Firestore instance and collection name:
 
 ```typescript
-import { FirestoreRepository } from '@spacelabs/firestore-orm';
+import { FirestoreRepository } from '@spacelabstech/firestoreorm';
 import { getFirestore } from 'firebase-admin/firestore';
 
 interface User {
@@ -48,7 +48,7 @@ const userRepo = new FirestoreRepository<User>(db, 'users');
 For production applications, you'll want validation. Use the `withSchema` static method to create a repository with Zod schema validation:
 
 ```typescript
-import { FirestoreRepository } from '@spacelabs/firestore-orm';
+import { FirestoreRepository } from '@spacelabstech/firestoreorm';
 import { z } from 'zod';
 
 const userSchema = z.object({
@@ -306,7 +306,7 @@ unsubscribe();
 FirestoreORM provides custom error types for better error handling:
 
 ```typescript
-import { NotFoundError, ValidationError } from '@spacelabs/firestore-orm';
+import { NotFoundError, ValidationError } from '@spacelabstech/firestoreorm';
 
 try {
   await userRepo.update('non-existent-id', { name: 'John' });
@@ -336,7 +336,7 @@ Organize repositories in dedicated modules:
 
 ```typescript
 // repositories/users.ts
-import { FirestoreRepository } from '@spacelabs/firestore-orm';
+import { FirestoreRepository } from '@spacelabstech/firestoreorm';
 import { db } from '../firebase';
 import { userSchema, User } from '../schemas/user';
 

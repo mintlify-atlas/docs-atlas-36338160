@@ -139,7 +139,7 @@ class ValidationError extends Error {
 ### How to Handle
 
 ```typescript
-import { ValidationError } from '@spacelabs/firestore-orm';
+import { ValidationError } from '@spacelabstech/firestoreorm';
 import { z } from 'zod';
 
 const userSchema = z.object({
@@ -234,7 +234,7 @@ The ORM doesn't throw this automatically. Use it in your application code for:
 ### How to Use
 
 ```typescript
-import { ConflictError } from '@spacelabs/firestore-orm';
+import { ConflictError } from '@spacelabstech/firestoreorm';
 
 // Example 1: Enforce unique email
 async function createUser(email: string, name: string) {
@@ -352,7 +352,7 @@ class FirestoreIndexError extends Error {
 ### How to Handle
 
 ```typescript
-import { FirestoreIndexError } from '@spacelabs/firestore-orm';
+import { FirestoreIndexError } from '@spacelabstech/firestoreorm';
 
 try {
   // Complex query requiring an index
@@ -472,7 +472,7 @@ import {
   ValidationError, 
   ConflictError,
   FirestoreIndexError 
-} from '@spacelabs/firestore-orm';
+} from '@spacelabstech/firestoreorm';
 
 async function updateUser(id: string, data: Partial<User>) {
   try {

@@ -56,7 +56,7 @@ The middleware maps errors to HTTP status codes as follows:
 
 ```typescript
 import express from 'express';
-import { errorHandler } from '@spacelabs/firestoreorm/core/ErrorHandler';
+import { errorHandler } from '@spacelabstech/firestoreorm' // ErrorHandler';
 
 const app = express();
 
@@ -71,7 +71,7 @@ app.listen(3000);
 ##### Use in Route Handlers
 
 ```typescript
-import { errorHandler } from '@spacelabs/firestoreorm/core/ErrorHandler';
+import { errorHandler } from '@spacelabstech/firestoreorm' // ErrorHandler';
 
 app.post('/users', async (req, res, next) => {
   try {
@@ -162,7 +162,7 @@ function parseFirestoreError(error: any): Error
 #### Usage Example
 
 ```typescript
-import { parseFirestoreError } from '@spacelabs/firestoreorm/core/ErrorParser';
+import { parseFirestoreError } from '@spacelabstech/firestoreorm' // ErrorParser';
 
 try {
   // Perform Firestore operation
@@ -199,11 +199,11 @@ Here's a complete example integrating error handling in an Express application:
 
 ```typescript
 import express from 'express';
-import { Repository } from '@spacelabs/firestoreorm';
-import { errorHandler } from '@spacelabs/firestoreorm/core/ErrorHandler';
+import { Repository } from '@spacelabstech/firestoreorm';
+import { errorHandler } from '@spacelabstech/firestoreorm' // ErrorHandler';
 import { Firestore } from '@google-cloud/firestore';
 import { z } from 'zod';
-import { makeValidator } from '@spacelabs/firestoreorm/core/Validation';
+import { makeValidator } from '@spacelabstech/firestoreorm' // Validation';
 
 const app = express();
 app.use(express.json());

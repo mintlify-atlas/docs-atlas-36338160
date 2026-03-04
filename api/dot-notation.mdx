@@ -30,7 +30,7 @@ function isDotNotation(key: string): boolean
 #### Example
 
 ```typescript
-import { isDotNotation } from '@spacelabs/firestoreorm/utils/dotNotation';
+import { isDotNotation } from '@spacelabstech/firestoreorm' // dotNotation';
 
 isDotNotation('address.city');  // true
 isDotNotation('name');          // false
@@ -60,7 +60,7 @@ function hasDotNotationKeys(obj: Record<string, any>): boolean
 #### Example
 
 ```typescript
-import { hasDotNotationKeys } from '@spacelabs/firestoreorm/utils/dotNotation';
+import { hasDotNotationKeys } from '@spacelabstech/firestoreorm' // dotNotation';
 
 hasDotNotationKeys({
   name: 'John',
@@ -100,7 +100,7 @@ function expandDotNotation<T = any>(
 #### Example
 
 ```typescript
-import { expandDotNotation } from '@spacelabs/firestoreorm/utils/dotNotation';
+import { expandDotNotation } from '@spacelabstech/firestoreorm' // dotNotation';
 
 const flat = {
   'address.city': 'Los Angeles',
@@ -157,7 +157,7 @@ function flattenToDotNotation<T = any>(
 #### Example
 
 ```typescript
-import { flattenToDotNotation } from '@spacelabs/firestoreorm/utils/dotNotation';
+import { flattenToDotNotation } from '@spacelabstech/firestoreorm' // dotNotation';
 
 const nested = {
   address: {
@@ -221,7 +221,7 @@ function mergeDotNotationUpdate(
 #### Example
 
 ```typescript
-import { mergeDotNotationUpdate } from '@spacelabs/firestoreorm/utils/dotNotation';
+import { mergeDotNotationUpdate } from '@spacelabstech/firestoreorm' // dotNotation';
 
 const existing = {
   name: 'John Doe',
@@ -278,7 +278,7 @@ Throws an Error if the key is invalid:
 #### Example
 
 ```typescript
-import { validateDotNotationPath } from '@spacelabs/firestoreorm/utils/dotNotation';
+import { validateDotNotationPath } from '@spacelabstech/firestoreorm' // dotNotation';
 
 // Valid paths
 validateDotNotationPath('address.city');     // OK
@@ -317,7 +317,7 @@ function getRootFields(keys: string[]): string[]
 #### Example
 
 ```typescript
-import { getRootFields } from '@spacelabs/firestoreorm/utils/dotNotation';
+import { getRootFields } from '@spacelabstech/firestoreorm' // dotNotation';
 
 const keys = [
   'address.city',
@@ -355,7 +355,7 @@ function getDotNotationDepth(key: string): number
 #### Example
 
 ```typescript
-import { getDotNotationDepth } from '@spacelabs/firestoreorm/utils/dotNotation';
+import { getDotNotationDepth } from '@spacelabstech/firestoreorm' // dotNotation';
 
 getDotNotationDepth('name');                    // 1
 getDotNotationDepth('address.city');            // 2
@@ -372,7 +372,7 @@ import {
   validateDotNotationPath,
   getRootFields,
   getDotNotationDepth
-} from '@spacelabs/firestoreorm/utils/dotNotation';
+} from '@spacelabstech/firestoreorm' // dotNotation';
 
 // Updating nested fields with dot notation
 const userUpdate = {

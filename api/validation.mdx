@@ -52,7 +52,7 @@ function makeValidator<T extends z.ZodObject<any>>(
 
 ```typescript
 import { z } from 'zod';
-import { makeValidator } from '@spacelabs/firestoreorm/core/Validation';
+import { makeValidator } from '@spacelabstech/firestoreorm' // Validation';
 
 // Define your schema
 const userSchema = z.object({
@@ -113,7 +113,7 @@ const validator = makeValidator(createSchema, updateSchema);
 Validators are typically used with the Repository pattern to ensure type safety:
 
 ```typescript
-import { Repository } from '@spacelabs/firestoreorm';
+import { Repository } from '@spacelabstech/firestoreorm';
 import { Firestore } from '@google-cloud/firestore';
 
 interface User {
