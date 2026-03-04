@@ -1,0 +1,549 @@
+---
+title: Schema Validation
+description: Runtime type safety with Zod schema validation for all Firestore operations
+---
+
+## Why Schema Validation?
+
+TypeScript provides compile-time type safety, but runtime data can come from anywhere - user input, external APIs, or legacy data. Schema validation ensures your data is valid before it reaches Firestore, preventing:
+
+- **Invalid data in your database**: Catch errors before they're persisted
+- **Runtime errors**: Prevent crashes from unexpected data shapes
+- **Data inconsistency**: Enforce business rules at the data layer
+- **Silent failures**: Get clear error messages about what went wrong
+
+## How It Works
+
+FirestoreORM uses [Zod](https://zod.dev) for schema validation. When you create a repository with a schema, all create and update operations automatically validate data against your schema:
+
+```typescript
+import { FirestoreRepository } from '@spacelabs/firestore-orm';
+import { z } from 'zod';
+
+const userSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  age: z.number().int().positive().optional()
+});
+
+const userRepo = FirestoreRepository.withSchema<User>(
+  db,
+  'users',
+  userSchema
+);
+```
+
+Now all operations validate automatically:
+
+```typescript
+// This passes validation
+await userRepo.create({
+  name: 'John Doe',
+  email: 'john@example.com',
+  age: 30
+});
+
+// This throws ValidationError
+await userRepo.create({
+  name: '', // Too short
+  email: 'invalid-email', // Invalid format
+  age: -5 // Not positive
+});
+```
+
+## Implementation Details
+
+Let's look at how FirestoreORM implements validation internally:
+
+### The Validator Interface
+
+From `src/core/Validation.ts:4-7`:
+
+```typescript
+export type Validator<T> = {
+  parseCreate(input: unknown): T;
+  parseUpdate(input: unknown): Partial<T>;
+}
+```
+
+This interface defines two methods:
+- `parseCreate`: Validates complete documents (all required fields)
+- `parseUpdate`: Validates partial updates (all fields optional)
+
+### Making a Validator
+
+From `src/core/Validation.ts:9-18`:
+
+```typescript
+export function makeValidator<T extends z.ZodObject<any>>(
+  createSchema: T,
+  updateSchema?: T
+): Validator<z.infer<T>> {
+  const update = updateSchema ?? createSchema.partial();
+  return {
+    parseCreate: (input) => createSchema.parse(input),
+    parseUpdate: (input) => update.parse(input) as Partial<z.infer<T>>,
+  };
+}
+```
+
+The `makeValidator` function:
+1. Takes a Zod schema for creation
+2. Optionally takes a separate schema for updates
+3. If no update schema provided, uses `createSchema.partial()` to make all fields optional
+4. Returns a validator that parses data appropriately
+
+### Validation During Create
+
+From `src/core/FirestoreRepository.ts:307-325`:
+
+```typescript
+async create(data: T): Promise<T & { id: ID }> {
+  try{
+    const validData = this.validator ? this.validator.parseCreate(data) : data;
+    const docToCreate = { ...validData, deletedAt: null };
+
+    await this.runHooks('beforeCreate', docToCreate);
+
+    const docRef = await this.col().add(docToCreate as any);
+    const created = { ...docToCreate, id: docRef.id };
+
+    await this.runHooks('afterCreate', created);
+    return created;
+  }catch(err: any){
+    if(err instanceof z.ZodError){
+      throw new ValidationError(err.issues);
+    }
+    throw parseFirestoreError(err);
+  }
+}
+```
+
+Validation happens on line 309. If validation fails, Zod throws a `ZodError`, which gets caught and converted to FirestoreORM's `ValidationError` on line 321.
+
+### Validation During Update
+
+From `src/core/FirestoreRepository.ts:443-478`:
+
+```typescript
+async update(id: ID, data: Partial<T>): Promise<T & {id: ID}> {
+  try{
+    const docRef = await this.col().doc(id);
+    const snapshot = await docRef.get();
+
+    if(!snapshot.exists) throw new NotFoundError(`Document with id ${id} not found`);
+
+    if(hasDotNotationKeys(data as Record<string, any>)){
+      Object.keys(data).forEach(key => {
+        if(key.includes('.')) validateDotNotationPath(key);
+      });
+    }
+
+    const validData = this.validator ? this.validator.parseUpdate(data) : data;
+    const toUpdate = { ...validData, id };
+
+    await this.runHooks('beforeUpdate', toUpdate);
+
+    const existingData = snapshot.data() as Record<string, any>;
+
+    const updated = hasDotNotationKeys(validData as Record<string, any>)
+      ? mergeDotNotationUpdate(existingData, validData as Record<string, any>)
+      : { ...existingData, ...validData };
+
+    await docRef.set(updated, { merge: true });
+
+    await this.runHooks('afterUpdate', updated);
+    return updated as T & {id: ID};
+  }catch(error: any){
+    if(error instanceof z.ZodError){
+      throw new ValidationError(error.issues);
+    }
+    throw parseFirestoreError(error);
+  }
+}
+```
+
+Updates use `parseUpdate` on line 456, which validates partial data. This allows updating individual fields without providing the entire document.
+
+## Defining Schemas
+
+### Basic Schema
+
+```typescript
+import { z } from 'zod';
+
+const productSchema = z.object({
+  name: z.string().min(1),
+  description: z.string(),
+  price: z.number().positive(),
+  inStock: z.boolean(),
+  category: z.enum(['electronics', 'clothing', 'books', 'other'])
+});
+
+type Product = z.infer<typeof productSchema> & { id?: string };
+```
+
+### Schema with Optional Fields
+
+```typescript
+const userSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  // Optional fields
+  phone: z.string().optional(),
+  bio: z.string().max(500).optional(),
+  // With defaults
+  verified: z.boolean().default(false),
+  createdAt: z.string().datetime().default(() => new Date().toISOString())
+});
+```
+
+### Nested Object Schemas
+
+```typescript
+const addressSchema = z.object({
+  street: z.string(),
+  city: z.string(),
+  state: z.string().length(2),
+  zipCode: z.string().regex(/^\d{5}$/)
+});
+
+const userSchema = z.object({
+  name: z.string(),
+  email: z.string().email(),
+  address: addressSchema.optional(),
+  shippingAddress: addressSchema.optional()
+});
+```
+
+### Array Schemas
+
+```typescript
+const orderSchema = z.object({
+  userId: z.string(),
+  items: z.array(z.object({
+    productId: z.string(),
+    quantity: z.number().int().positive(),
+    price: z.number().positive()
+  })).min(1), // At least one item
+  tags: z.array(z.string()).optional(),
+  status: z.enum(['pending', 'processing', 'shipped', 'delivered'])
+});
+```
+
+### Custom Validations
+
+```typescript
+const userSchema = z.object({
+  username: z.string()
+    .min(3)
+    .max(20)
+    .regex(/^[a-zA-Z0-9_]+$/, 'Username can only contain letters, numbers, and underscores'),
+  
+  email: z.string().email(),
+  
+  age: z.number()
+    .int()
+    .min(18, 'Must be 18 or older')
+    .max(120),
+  
+  password: z.string()
+    .min(8, 'Password must be at least 8 characters')
+    .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+    .regex(/[0-9]/, 'Password must contain at least one number'),
+  
+  terms: z.literal(true, {
+    errorMap: () => ({ message: 'You must accept the terms and conditions' })
+  })
+});
+```
+
+### Refinements and Transformations
+
+```typescript
+const eventSchema = z.object({
+  title: z.string(),
+  startDate: z.string().datetime(),
+  endDate: z.string().datetime(),
+  participants: z.array(z.string())
+}).refine(
+  (data) => new Date(data.endDate) > new Date(data.startDate),
+  {
+    message: 'End date must be after start date',
+    path: ['endDate']
+  }
+).refine(
+  (data) => data.participants.length <= 100,
+  {
+    message: 'Events cannot have more than 100 participants',
+    path: ['participants']
+  }
+);
+```
+
+```typescript
+const userSchema = z.object({
+  email: z.string().email().transform(val => val.toLowerCase()),
+  name: z.string().transform(val => val.trim()),
+  tags: z.array(z.string()).transform(tags => [...new Set(tags)]) // Remove duplicates
+});
+```
+
+## Handling Validation Errors
+
+### ValidationError Structure
+
+From `src/core/Errors.ts:39-46`:
+
+```typescript
+export class ValidationError extends Error {
+  constructor(public issues: z.core.$ZodIssue[]){
+    super('Validation failed');
+    this.name = 'ValidationError';
+
+    this.message = issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join(', ');
+  }
+}
+```
+
+The `ValidationError` class contains:
+- `issues`: Array of Zod validation issues with detailed information
+- `message`: Formatted error message showing all failures
+
+### Basic Error Handling
+
+```typescript
+import { ValidationError } from '@spacelabs/firestore-orm';
+
+try {
+  await userRepo.create({
+    name: '',
+    email: 'invalid-email',
+    age: -5
+  });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.log(error.message);
+    // Output: "name: String must contain at least 1 character(s), email: Invalid email, age: Number must be greater than 0"
+    
+    // Access individual issues
+    error.issues.forEach(issue => {
+      console.log(`Field: ${issue.path.join('.')}`);
+      console.log(`Error: ${issue.message}`);
+      console.log(`Code: ${issue.code}`);
+    });
+  }
+}
+```
+
+### Building User-Friendly Error Messages
+
+```typescript
+function formatValidationErrors(error: ValidationError): Record<string, string> {
+  const errors: Record<string, string> = {};
+  
+  for (const issue of error.issues) {
+    const fieldName = issue.path.join('.');
+    errors[fieldName] = issue.message;
+  }
+  
+  return errors;
+}
+
+// Usage
+try {
+  await userRepo.create(formData);
+} catch (error) {
+  if (error instanceof ValidationError) {
+    const fieldErrors = formatValidationErrors(error);
+    // { name: 'String must contain at least 1 character(s)', email: 'Invalid email' }
+    displayFormErrors(fieldErrors);
+  }
+}
+```
+
+### API Response Example
+
+```typescript
+import { ValidationError } from '@spacelabs/firestore-orm';
+
+app.post('/api/users', async (req, res) => {
+  try {
+    const user = await userRepo.create(req.body);
+    res.json({ success: true, data: user });
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      res.status(400).json({
+        success: false,
+        error: 'Validation failed',
+        details: error.issues.map(issue => ({
+          field: issue.path.join('.'),
+          message: issue.message,
+          code: issue.code
+        }))
+      });
+    } else {
+      res.status(500).json({ success: false, error: 'Internal server error' });
+    }
+  }
+});
+```
+
+## Separate Create and Update Schemas
+
+Sometimes you need different validation rules for creating vs updating:
+
+```typescript
+const userCreateSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  name: z.string().min(1),
+  role: z.enum(['admin', 'user']).default('user')
+});
+
+const userUpdateSchema = z.object({
+  name: z.string().min(1).optional(),
+  // Email can't be changed
+  // Password requires separate endpoint
+  role: z.enum(['admin', 'user']).optional()
+});
+
+const userRepo = new FirestoreRepository<User>(
+  db,
+  'users',
+  makeValidator(userCreateSchema, userUpdateSchema)
+);
+```
+
+## Validation in Bulk Operations
+
+All bulk operations validate each item:
+
+```typescript
+// Bulk create validates each document
+try {
+  await userRepo.bulkCreate([
+    { name: 'Alice', email: 'alice@example.com', age: 30 },
+    { name: '', email: 'invalid', age: -5 }, // This will fail
+    { name: 'Charlie', email: 'charlie@example.com', age: 25 }
+  ]);
+} catch (error) {
+  if (error instanceof ValidationError) {
+    // First invalid item stops the operation
+    console.log('Validation failed, no documents created');
+  }
+}
+```
+
+## Validation in Transactions
+
+Validation works seamlessly in transactions:
+
+```typescript
+await userRepo.runInTransaction(async (tx, repo) => {
+  // Create is validated
+  const newUser = await repo.createInTransaction(tx, {
+    name: 'John Doe',
+    email: 'john@example.com'
+  });
+  
+  // Update is validated
+  await repo.updateInTransaction(tx, 'user-123', {
+    role: 'admin'
+  });
+});
+```
+
+## Performance Considerations
+
+### Validation is Fast
+
+Zod's validation is highly optimized and adds minimal overhead:
+
+```typescript
+// Validation happens in memory before any network call
+const start = Date.now();
+const validData = userSchema.parse(data); // ~0.1ms
+const validationTime = Date.now() - start;
+
+// Firestore write is much slower
+const writeStart = Date.now();
+await userRepo.create(validData); // ~50-200ms
+const writeTime = Date.now() - writeStart;
+
+// Validation overhead is negligible compared to network I/O
+```
+
+### When to Skip Validation
+
+There are rare cases where you might want to skip validation:
+
+```typescript
+// Create repository without validation
+const rawUserRepo = new FirestoreRepository<User>(db, 'users');
+
+// Use for trusted internal operations only
+await rawUserRepo.create(trustedData);
+```
+
+However, it's generally safer to keep validation enabled.
+
+## Best Practices
+
+### 1. Define Schemas Alongside Types
+
+```typescript
+// schemas/product.ts
+import { z } from 'zod';
+
+export const productSchema = z.object({
+  name: z.string().min(1),
+  price: z.number().positive(),
+  category: z.enum(['electronics', 'clothing', 'books'])
+});
+
+export type Product = z.infer<typeof productSchema> & { id?: string };
+```
+
+### 2. Use Descriptive Error Messages
+
+```typescript
+const passwordSchema = z.string()
+  .min(8, 'Password must be at least 8 characters')
+  .regex(/[A-Z]/, 'Password must contain an uppercase letter')
+  .regex(/[0-9]/, 'Password must contain a number')
+  .regex(/[^A-Za-z0-9]/, 'Password must contain a special character');
+```
+
+### 3. Share Schemas Between Frontend and Backend
+
+```typescript
+// shared/schemas/user.ts
+export const userSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email()
+});
+
+// Use in frontend validation (React Hook Form, Formik, etc.)
+// Use in backend validation (FirestoreORM)
+```
+
+### 4. Validate Business Rules
+
+```typescript
+const discountSchema = z.object({
+  code: z.string().toUpperCase(),
+  percentage: z.number().min(1).max(100),
+  validUntil: z.string().datetime(),
+  maxUses: z.number().int().positive().optional()
+}).refine(
+  (data) => new Date(data.validUntil) > new Date(),
+  { message: 'Discount must be valid in the future', path: ['validUntil'] }
+);
+```
+
+## What's Next?
+
+- Explore [Soft Deletes](/concepts/soft-deletes) for recoverable deletion
+- Learn about [Lifecycle Hooks](/concepts/lifecycle-hooks) for validation side effects
+- Check the [Repository Pattern](/concepts/repository-pattern) guide

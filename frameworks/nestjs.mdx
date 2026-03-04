@@ -1,0 +1,828 @@
+---
+title: 'NestJS Integration'
+description: 'Complete guide to integrating FirestoreORM with NestJS using dependency injection, DTOs, and best practices'
+---
+
+# NestJS Integration
+
+Integrate FirestoreORM with NestJS to leverage dependency injection, decorators, and NestJS's modular architecture while maintaining type safety and clean code organization.
+
+## Quick Start
+
+<Steps>
+  <Step title="Create Database Module">
+    Set up a global module to provide Firestore as a dependency across your application.
+
+    ```typescript modules/database/database.module.ts
+    import { Module, Global } from '@nestjs/common';
+    import { ConfigService } from '@nestjs/config';
+    import { initializeApp, cert } from 'firebase-admin/app';
+    import { getFirestore, Firestore } from 'firebase-admin/firestore';
+
+    @Global()
+    @Module({
+      providers: [
+        {
+          provide: 'FIRESTORE',
+          useFactory: (config: ConfigService) => {
+            const app = initializeApp({
+              credential: cert(config.get('firebase.serviceAccount'))
+            });
+            return getFirestore(app);
+          },
+          inject: [ConfigService]
+        }
+      ],
+      exports: ['FIRESTORE']
+    })
+    export class DatabaseModule {}
+    ```
+  </Step>
+
+  <Step title="Define Schema and DTOs">
+    Use Zod schemas for both ORM validation and NestJS DTOs to maintain a single source of truth.
+
+    ```typescript schemas/user.schema.ts
+    import { z } from 'zod';
+
+    export const userSchema = z.object({
+      id: z.string().optional(),
+      name: z.string().min(1),
+      email: z.string().email(),
+      age: z.number().int().positive().optional(),
+      status: z.enum(['active', 'inactive', 'suspended']),
+      createdAt: z.string().datetime(),
+      updatedAt: z.string().datetime()
+    });
+
+    export type User = z.infer<typeof userSchema>;
+
+    // DTOs derived from same schema
+    export const createUserSchema = userSchema.omit({ 
+      id: true,
+      createdAt: true, 
+      updatedAt: true 
+    });
+    export const updateUserSchema = createUserSchema.partial();
+
+    export type CreateUserDto = z.infer<typeof createUserSchema>;
+    export type UpdateUserDto = z.infer<typeof updateUserSchema>;
+    ```
+  </Step>
+
+  <Step title="Create Repository Provider">
+    Wrap FirestoreORM repositories in NestJS injectable services.
+
+    ```typescript modules/user/user.repository.ts
+    import { Injectable, Inject } from '@nestjs/common';
+    import { Firestore } from 'firebase-admin/firestore';
+    import { FirestoreRepository } from '@spacelabstech/firestoreorm';
+    import { User, userSchema } from '../../schemas/user.schema';
+
+    @Injectable()
+    export class UserRepository {
+      private repo: FirestoreRepository<User>;
+
+      constructor(@Inject('FIRESTORE') private firestore: Firestore) {
+        this.repo = FirestoreRepository.withSchema<User>(
+          firestore,
+          'users',
+          userSchema
+        );
+
+        this.setupHooks();
+      }
+
+      private setupHooks() {
+        this.repo.on('afterCreate', async (user) => {
+          console.log(`User created: ${user.id}`);
+        });
+      }
+
+      async create(data: Omit<User, 'id' | 'createdAt' | 'updatedAt'>) {
+        return this.repo.create({
+          ...data,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+      }
+
+      async findById(id: string) {
+        return this.repo.getById(id);
+      }
+
+      async update(id: string, data: Partial<User>) {
+        return this.repo.update(id, {
+          ...data,
+          updatedAt: new Date().toISOString()
+        });
+      }
+
+      async softDelete(id: string) {
+        return this.repo.softDelete(id);
+      }
+
+      query() {
+        return this.repo.query();
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Build Service Layer">
+    Implement business logic in services that use the repository.
+
+    ```typescript modules/user/user.service.ts
+    import { Injectable, NotFoundException } from '@nestjs/common';
+    import { UserRepository } from './user.repository';
+    import { CreateUserDto, UpdateUserDto } from '../../schemas/user.schema';
+    import { NotFoundError } from '@spacelabstech/firestoreorm';
+
+    @Injectable()
+    export class UserService {
+      constructor(private userRepository: UserRepository) {}
+
+      async create(dto: CreateUserDto) {
+        return this.userRepository.create(dto);
+      }
+
+      async findOne(id: string) {
+        const user = await this.userRepository.findById(id);
+        
+        if (!user) {
+          throw new NotFoundException(`User with ID ${id} not found`);
+        }
+        
+        return user;
+      }
+
+      async findActive(page: number = 1, limit: number = 20) {
+        return this.userRepository.query()
+          .where('status', '==', 'active')
+          .orderBy('createdAt', 'desc')
+          .offsetPaginate(page, limit);
+      }
+
+      async update(id: string, dto: UpdateUserDto) {
+        try {
+          return await this.userRepository.update(id, dto);
+        } catch (error) {
+          if (error instanceof NotFoundError) {
+            throw new NotFoundException(error.message);
+          }
+          throw error;
+        }
+      }
+
+      async remove(id: string) {
+        await this.userRepository.softDelete(id);
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Create Controller">
+    Build REST endpoints using NestJS decorators and validation pipes.
+
+    ```typescript modules/user/user.controller.ts
+    import { 
+      Controller, 
+      Get, 
+      Post, 
+      Body, 
+      Param, 
+      Patch, 
+      Delete,
+      Query,
+      UsePipes
+    } from '@nestjs/common';
+    import { UserService } from './user.service';
+    import { CreateUserDto, UpdateUserDto } from '../../schemas/user.schema';
+    import { ZodValidationPipe } from '../../pipes/zod-validation.pipe';
+    import { createUserSchema, updateUserSchema } from '../../schemas/user.schema';
+
+    @Controller('users')
+    export class UserController {
+      constructor(private readonly userService: UserService) {}
+
+      @Post()
+      @UsePipes(new ZodValidationPipe(createUserSchema))
+      create(@Body() createUserDto: CreateUserDto) {
+        return this.userService.create(createUserDto);
+      }
+
+      @Get()
+      findAll(
+        @Query('page') page: string = '1',
+        @Query('limit') limit: string = '20'
+      ) {
+        return this.userService.findActive(Number(page), Number(limit));
+      }
+
+      @Get(':id')
+      findOne(@Param('id') id: string) {
+        return this.userService.findOne(id);
+      }
+
+      @Patch(':id')
+      @UsePipes(new ZodValidationPipe(updateUserSchema))
+      update(
+        @Param('id') id: string,
+        @Body() updateUserDto: UpdateUserDto
+      ) {
+        return this.userService.update(id, updateUserDto);
+      }
+
+      @Delete(':id')
+      remove(@Param('id') id: string) {
+        return this.userService.remove(id);
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Register Module">
+    Create the user module and register it in your app.
+
+    ```typescript modules/user/user.module.ts
+    import { Module } from '@nestjs/common';
+    import { UserController } from './user.controller';
+    import { UserService } from './user.service';
+    import { UserRepository } from './user.repository';
+
+    @Module({
+      controllers: [UserController],
+      providers: [UserService, UserRepository],
+      exports: [UserService, UserRepository]
+    })
+    export class UserModule {}
+    ```
+
+    ```typescript app.module.ts
+    import { Module } from '@nestjs/common';
+    import { ConfigModule } from '@nestjs/config';
+    import { DatabaseModule } from './modules/database/database.module';
+    import { UserModule } from './modules/user/user.module';
+
+    @Module({
+      imports: [
+        ConfigModule.forRoot({ isGlobal: true }),
+        DatabaseModule,
+        UserModule
+      ]
+    })
+    export class AppModule {}
+    ```
+  </Step>
+</Steps>
+
+## Validation with Zod
+
+### Zod Validation Pipe
+
+Create a custom validation pipe to validate request bodies using Zod schemas.
+
+```typescript pipes/zod-validation.pipe.ts
+import { PipeTransform, BadRequestException } from '@nestjs/common';
+import { ZodSchema } from 'zod';
+
+export class ZodValidationPipe implements PipeTransform {
+  constructor(private schema: ZodSchema) {}
+
+  transform(value: unknown) {
+    try {
+      return this.schema.parse(value);
+    } catch (error) {
+      throw new BadRequestException({
+        message: 'Validation failed',
+        errors: error.errors
+      });
+    }
+  }
+}
+```
+
+<Note>
+While the Zod validation pipe provides request-level validation, FirestoreORM also validates data before writes. This double validation ensures data integrity at both the API and database layers.
+</Note>
+
+## Exception Handling
+
+### Firestore Exception Filter
+
+Create a global exception filter to handle FirestoreORM errors consistently.
+
+```typescript filters/firestore-exception.filter.ts
+import { 
+  ExceptionFilter, 
+  Catch, 
+  ArgumentsHost, 
+  HttpStatus 
+} from '@nestjs/common';
+import { Response } from 'express';
+import { 
+  ValidationError, 
+  NotFoundError, 
+  ConflictError,
+  FirestoreIndexError
+} from '@spacelabstech/firestoreorm';
+
+@Catch(ValidationError, NotFoundError, ConflictError, FirestoreIndexError)
+export class FirestoreExceptionFilter implements ExceptionFilter {
+  catch(exception: any, host: ArgumentsHost) {
+    const ctx = host.switchToHttp();
+    const response = ctx.getResponse<Response>();
+
+    if (exception instanceof ValidationError) {
+      response.status(HttpStatus.BAD_REQUEST).json({
+        statusCode: HttpStatus.BAD_REQUEST,
+        error: 'Validation Error',
+        details: exception.issues
+      });
+    } else if (exception instanceof NotFoundError) {
+      response.status(HttpStatus.NOT_FOUND).json({
+        statusCode: HttpStatus.NOT_FOUND,
+        error: 'Not Found',
+        message: exception.message
+      });
+    } else if (exception instanceof ConflictError) {
+      response.status(HttpStatus.CONFLICT).json({
+        statusCode: HttpStatus.CONFLICT,
+        error: 'Conflict',
+        message: exception.message
+      });
+    } else if (exception instanceof FirestoreIndexError) {
+      response.status(HttpStatus.BAD_REQUEST).json({
+        statusCode: HttpStatus.BAD_REQUEST,
+        error: 'Index Required',
+        message: exception.message,
+        indexUrl: exception.indexUrl
+      });
+    }
+  }
+}
+```
+
+### Register Filter Globally
+
+```typescript main.ts
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import { FirestoreExceptionFilter } from './filters/firestore-exception.filter';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  
+  app.useGlobalFilters(new FirestoreExceptionFilter());
+  
+  await app.listen(3000);
+}
+bootstrap();
+```
+
+## Advanced Patterns
+
+### Query Builder in Services
+
+Leverage the full power of FirestoreORM's query builder in your service methods.
+
+<CodeGroup>
+```typescript Complex Queries
+@Injectable()
+export class OrderService {
+  constructor(private orderRepository: OrderRepository) {}
+
+  async findUserOrders(
+    userId: string,
+    status?: string,
+    minTotal?: number,
+    page: number = 1,
+    limit: number = 20
+  ) {
+    let query = this.orderRepository.query()
+      .where('userId', '==', userId);
+
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+
+    if (minTotal) {
+      query = query.where('total', '>=', minTotal);
+    }
+
+    return query
+      .orderBy('createdAt', 'desc')
+      .offsetPaginate(page, limit);
+  }
+
+  async getOrderStats(userId: string) {
+    const totalOrders = await this.orderRepository.query()
+      .where('userId', '==', userId)
+      .where('status', '==', 'completed')
+      .count();
+
+    const totalSpent = await this.orderRepository.query()
+      .where('userId', '==', userId)
+      .where('status', '==', 'completed')
+      .aggregate('total', 'sum');
+
+    const avgOrderValue = await this.orderRepository.query()
+      .where('userId', '==', userId)
+      .where('status', '==', 'completed')
+      .aggregate('total', 'avg');
+
+    return {
+      totalOrders,
+      totalSpent,
+      averageOrderValue: avgOrderValue
+    };
+  }
+}
+```
+
+```typescript Bulk Operations
+@Injectable()
+export class UserService {
+  constructor(private userRepository: UserRepository) {}
+
+  async bulkCreateUsers(users: CreateUserDto[]) {
+    const usersWithTimestamps = users.map(user => ({
+      ...user,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }));
+
+    return this.userRepository.bulkCreate(usersWithTimestamps);
+  }
+
+  async updateAllInactive() {
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - 6);
+
+    const count = await this.userRepository.query()
+      .where('lastLogin', '<', cutoffDate.toISOString())
+      .where('status', '==', 'active')
+      .update({
+        status: 'inactive',
+        updatedAt: new Date().toISOString()
+      });
+
+    return { updated: count };
+  }
+}
+```
+
+```typescript Streaming
+@Injectable()
+export class ExportService {
+  constructor(private userRepository: UserRepository) {}
+
+  async exportUsers(): Promise<string> {
+    const rows: string[] = ['name,email,status'];
+
+    for await (const user of this.userRepository.query()
+      .where('status', '==', 'active')
+      .stream()) {
+      rows.push(`${user.name},${user.email},${user.status}`);
+    }
+
+    return rows.join('\n');
+  }
+}
+```
+</CodeGroup>
+
+### Transactions
+
+Use transactions for operations requiring atomicity across multiple documents.
+
+```typescript services/account.service.ts
+import { Injectable } from '@nestjs/common';
+import { AccountRepository } from '../repositories/account.repository';
+
+@Injectable()
+export class AccountService {
+  constructor(private accountRepository: AccountRepository) {}
+
+  async transferFunds(
+    fromAccountId: string,
+    toAccountId: string,
+    amount: number
+  ) {
+    return this.accountRepository.runInTransaction(async (tx, repo) => {
+      const from = await repo.getForUpdate(tx, fromAccountId);
+      const to = await repo.getForUpdate(tx, toAccountId);
+
+      if (!from || !to) {
+        throw new Error('Account not found');
+      }
+
+      if (from.balance < amount) {
+        throw new Error('Insufficient funds');
+      }
+
+      await repo.updateInTransaction(tx, fromAccountId, {
+        balance: from.balance - amount,
+        updatedAt: new Date().toISOString()
+      });
+
+      await repo.updateInTransaction(tx, toAccountId, {
+        balance: to.balance + amount,
+        updatedAt: new Date().toISOString()
+      });
+
+      return { from: fromAccountId, to: toAccountId, amount };
+    });
+  }
+}
+```
+
+<Note>
+Remember that `after*` hooks do not run inside transactions. Run post-transaction side effects manually after the transaction completes successfully.
+</Note>
+
+### Subcollections
+
+Work with nested data structures using subcollections.
+
+```typescript services/post.service.ts
+import { Injectable } from '@nestjs/common';
+import { PostRepository } from '../repositories/post.repository';
+import { Comment, commentSchema } from '../../schemas/comment.schema';
+
+@Injectable()
+export class PostService {
+  constructor(private postRepository: PostRepository) {}
+
+  async addComment(postId: string, commentData: Omit<Comment, 'id'>) {
+    const commentsRepo = this.postRepository.subcollection<Comment>(
+      postId,
+      'comments',
+      commentSchema
+    );
+
+    return commentsRepo.create({
+      ...commentData,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  async getPostComments(postId: string, page: number = 1) {
+    const commentsRepo = this.postRepository.subcollection<Comment>(
+      postId,
+      'comments',
+      commentSchema
+    );
+
+    return commentsRepo.query()
+      .orderBy('createdAt', 'desc')
+      .offsetPaginate(page, 20);
+  }
+}
+```
+
+## Lifecycle Hooks in Repositories
+
+Set up hooks in repository constructors to handle cross-cutting concerns.
+
+```typescript repositories/order.repository.ts
+import { Injectable, Inject } from '@nestjs/common';
+import { Firestore } from 'firebase-admin/firestore';
+import { FirestoreRepository } from '@spacelabstech/firestoreorm';
+import { Order, orderSchema } from '../../schemas/order.schema';
+import { EmailService } from '../email/email.service';
+import { InventoryService } from '../inventory/inventory.service';
+
+@Injectable()
+export class OrderRepository {
+  private repo: FirestoreRepository<Order>;
+
+  constructor(
+    @Inject('FIRESTORE') private firestore: Firestore,
+    private emailService: EmailService,
+    private inventoryService: InventoryService
+  ) {
+    this.repo = FirestoreRepository.withSchema<Order>(
+      firestore,
+      'orders',
+      orderSchema
+    );
+
+    this.setupHooks();
+  }
+
+  private setupHooks() {
+    // Validate inventory before creating order
+    this.repo.on('beforeCreate', async (order) => {
+      for (const item of order.items) {
+        const available = await this.inventoryService.checkStock(
+          item.productId,
+          item.quantity
+        );
+        
+        if (!available) {
+          throw new Error(`Insufficient stock for ${item.productName}`);
+        }
+      }
+    });
+
+    // Send confirmation after order created
+    this.repo.on('afterCreate', async (order) => {
+      await this.emailService.sendOrderConfirmation(order);
+      
+      // Update inventory
+      for (const item of order.items) {
+        await this.inventoryService.reduceStock(
+          item.productId,
+          item.quantity
+        );
+      }
+    });
+
+    // Send shipping notification
+    this.repo.on('afterUpdate', async (order) => {
+      if (order.status === 'shipped') {
+        await this.emailService.sendShippingNotification(order);
+      }
+    });
+  }
+
+  // Repository methods...
+  async create(data: Omit<Order, 'id' | 'createdAt' | 'updatedAt'>) {
+    return this.repo.create({
+      ...data,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  query() {
+    return this.repo.query();
+  }
+}
+```
+
+<Tip>
+Hooks automatically inject dependencies through NestJS's DI system, allowing clean separation between data operations and business logic.
+</Tip>
+
+## Testing
+
+### Unit Testing Services
+
+Mock repositories to test service logic in isolation.
+
+```typescript user.service.spec.ts
+import { Test, TestingModule } from '@nestjs/testing';
+import { UserService } from './user.service';
+import { UserRepository } from './user.repository';
+import { NotFoundException } from '@nestjs/common';
+
+const mockUserRepository = {
+  create: jest.fn(),
+  findById: jest.fn(),
+  update: jest.fn(),
+  query: jest.fn(),
+};
+
+describe('UserService', () => {
+  let service: UserService;
+  let repository: UserRepository;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        UserService,
+        {
+          provide: UserRepository,
+          useValue: mockUserRepository,
+        },
+      ],
+    }).compile();
+
+    service = module.get<UserService>(UserService);
+    repository = module.get<UserRepository>(UserRepository);
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('create', () => {
+    it('should create a user', async () => {
+      const dto = { name: 'John', email: 'john@example.com' };
+      const expected = { id: '123', ...dto };
+
+      mockUserRepository.create.mockResolvedValue(expected);
+
+      const result = await service.create(dto);
+      expect(result).toEqual(expected);
+      expect(repository.create).toHaveBeenCalledWith(dto);
+    });
+  });
+
+  describe('findOne', () => {
+    it('should return a user', async () => {
+      const user = { id: '123', name: 'John' };
+      mockUserRepository.findById.mockResolvedValue(user);
+
+      const result = await service.findOne('123');
+      expect(result).toEqual(user);
+    });
+
+    it('should throw NotFoundException if user not found', async () => {
+      mockUserRepository.findById.mockResolvedValue(null);
+
+      await expect(service.findOne('999')).rejects.toThrow(NotFoundException);
+    });
+  });
+});
+```
+
+### E2E Testing
+
+Test the full request/response cycle including validation and error handling.
+
+```typescript user.e2e-spec.ts
+import { Test, TestingModule } from '@nestjs/testing';
+import { INestApplication } from '@nestjs/common';
+import * as request from 'supertest';
+import { AppModule } from '../src/app.module';
+
+describe('UserController (e2e)', () => {
+  let app: INestApplication;
+
+  beforeAll(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+
+    app = moduleFixture.createNestApplication();
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  describe('/users (POST)', () => {
+    it('should create a user', () => {
+      return request(app.getHttpServer())
+        .post('/users')
+        .send({
+          name: 'John Doe',
+          email: 'john@example.com',
+          status: 'active'
+        })
+        .expect(201)
+        .expect((res) => {
+          expect(res.body).toHaveProperty('id');
+          expect(res.body.name).toBe('John Doe');
+        });
+    });
+
+    it('should return 400 for invalid email', () => {
+      return request(app.getHttpServer())
+        .post('/users')
+        .send({
+          name: 'John Doe',
+          email: 'invalid-email'
+        })
+        .expect(400);
+    });
+  });
+
+  describe('/users/:id (GET)', () => {
+    it('should return 404 for non-existent user', () => {
+      return request(app.getHttpServer())
+        .get('/users/non-existent-id')
+        .expect(404);
+    });
+  });
+});
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Repository Pattern" icon="database">
+    Wrap FirestoreORM repositories in injectable NestJS services. This provides dependency injection and makes testing easier.
+  </Card>
+  
+  <Card title="Single Schema Source" icon="code">
+    Derive DTOs from Zod schemas to maintain a single source of truth for validation logic across your application.
+  </Card>
+  
+  <Card title="Global Exception Filter" icon="filter">
+    Register a global exception filter to handle FirestoreORM errors consistently across all endpoints.
+  </Card>
+  
+  <Card title="Lifecycle Hooks" icon="arrow-progress">
+    Set up hooks in repository constructors to handle cross-cutting concerns without cluttering service methods.
+  </Card>
+</CardGroup>
+
+<Tip>
+NestJS's modular architecture pairs perfectly with FirestoreORM's repository pattern. Keep repositories focused on data access and services focused on business logic.
+</Tip>

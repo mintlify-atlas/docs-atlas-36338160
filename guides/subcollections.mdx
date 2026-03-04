@@ -1,0 +1,580 @@
+---
+title: 'Subcollections'
+description: 'Navigate and manage hierarchical data structures with subcollections'
+icon: 'folder-tree'
+---
+
+Subcollections allow you to organize data hierarchically within Firestore documents. FirestoreORM makes working with subcollections intuitive and type-safe.
+
+## Understanding Subcollections
+
+Subcollections are collections that exist under a specific document. They enable hierarchical data organization.
+
+### Document Path Structure
+
+```
+collection/document/subcollection/subdocument
+```
+
+For example:
+- `users/user-123/orders/order-456`
+- `posts/post-789/comments/comment-101`
+- `organizations/org-1/teams/team-2/members/member-3`
+
+<Info>
+Each document can have multiple subcollections, and subcollections can be nested indefinitely.
+</Info>
+
+## Creating Subcollection Repositories
+
+### Basic Subcollection Access
+
+Use the `subcollection()` method to access a subcollection under a specific parent document.
+
+```typescript
+// Access orders for a specific user
+const userOrders = userRepo.subcollection<Order>(
+  'user-123',
+  'orders'
+);
+
+// Now use it like any repository
+const order = await userOrders.create({
+  product: 'Widget',
+  price: 99.99,
+  quantity: 2,
+  status: 'pending'
+});
+```
+
+### Subcollection with Schema Validation
+
+Add Zod schema validation to subcollections.
+
+```typescript
+import { z } from 'zod';
+
+const orderSchema = z.object({
+  id: z.string().optional(),
+  product: z.string(),
+  price: z.number().positive(),
+  quantity: z.number().int().positive(),
+  status: z.enum(['pending', 'completed', 'cancelled'])
+});
+
+const userOrders = userRepo.subcollection<Order>(
+  'user-123',
+  'orders',
+  orderSchema
+);
+
+// Validation happens automatically
+await userOrders.create({
+  product: 'Widget',
+  price: -10, // ❌ ValidationError: price must be positive
+  quantity: 2,
+  status: 'pending'
+});
+```
+
+## CRUD Operations in Subcollections
+
+### Create Documents
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+const order = await userOrders.create({
+  product: 'Gaming Laptop',
+  price: 1299.99,
+  quantity: 1,
+  status: 'pending',
+  createdAt: new Date().toISOString()
+});
+
+console.log(order.id); // Auto-generated ID
+// Full path: users/user-123/orders/xyz789
+```
+
+### Read Documents
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+// Get by ID
+const order = await userOrders.getById('order-456');
+
+// List all orders for this user
+const allOrders = await userOrders.list(50);
+
+// Query orders
+const completedOrders = await userOrders.query()
+  .where('status', '==', 'completed')
+  .orderBy('createdAt', 'desc')
+  .get();
+```
+
+### Update Documents
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+await userOrders.update('order-456', {
+  status: 'shipped',
+  shippedAt: new Date().toISOString()
+});
+```
+
+### Delete Documents
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+// Soft delete
+await userOrders.softDelete('order-456');
+
+// Hard delete
+await userOrders.delete('order-456');
+```
+
+## Nested Subcollections
+
+Subcollections can be nested to create complex hierarchies.
+
+### Multiple Levels
+
+```typescript
+// posts/post-123/comments/comment-456/replies/reply-789
+
+const postComments = postRepo.subcollection<Comment>(
+  'post-123',
+  'comments'
+);
+
+const commentReplies = postComments.subcollection<Reply>(
+  'comment-456',
+  'replies'
+);
+
+const reply = await commentReplies.create({
+  author: 'user-999',
+  text: 'Great point!',
+  createdAt: new Date().toISOString()
+});
+```
+
+### Deep Nesting Example
+
+```typescript
+// organizations/org-1/teams/team-2/projects/project-3/tasks/task-4
+
+const orgTeams = organizationRepo.subcollection<Team>('org-1', 'teams');
+const teamProjects = orgTeams.subcollection<Project>('team-2', 'projects');
+const projectTasks = teamProjects.subcollection<Task>('project-3', 'tasks');
+
+const task = await projectTasks.create({
+  title: 'Implement feature X',
+  assignee: 'user-123',
+  status: 'in-progress'
+});
+```
+
+<Warning>
+While Firestore supports unlimited nesting, deep hierarchies can make queries complex. Consider flattening your data structure if you find yourself going more than 3 levels deep.
+</Warning>
+
+## Querying Subcollections
+
+### Query Single User's Orders
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+const recentOrders = await userOrders.query()
+  .where('status', '==', 'completed')
+  .orderBy('createdAt', 'desc')
+  .limit(10)
+  .get();
+```
+
+### Pagination in Subcollections
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+const { items, nextCursorId } = await userOrders.query()
+  .orderBy('createdAt', 'desc')
+  .paginate(20);
+
+console.log(`Found ${items.length} orders`);
+```
+
+### Aggregations
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+// Total spent by user
+const totalSpent = await userOrders.query()
+  .where('status', '==', 'completed')
+  .aggregate('price', 'sum');
+
+console.log(`User total spent: $${totalSpent}`);
+```
+
+## Getting Parent Information
+
+### Get Parent ID
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+const parentId = userOrders.getParentId();
+console.log(parentId); // 'user-123'
+```
+
+### Get Collection Path
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+const path = userOrders.getCollectionPath();
+console.log(path); // 'users/user-123/orders'
+```
+
+### Check if Subcollection
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+console.log(userOrders.isSubcollection()); // true
+
+const topLevel = new FirestoreRepository(db, 'users');
+console.log(topLevel.isSubcollection()); // false
+```
+
+## Real-World Examples
+
+### E-commerce User Orders
+
+```typescript
+interface Order {
+  id?: string;
+  items: OrderItem[];
+  total: number;
+  status: 'pending' | 'processing' | 'shipped' | 'delivered';
+  shippingAddress: Address;
+  createdAt: string;
+  updatedAt: string;
+}
+
+class OrderService {
+  async createOrder(userId: string, orderData: Omit<Order, 'id'>) {
+    const userOrders = userRepo.subcollection<Order>(userId, 'orders');
+    
+    return await userOrders.create(orderData);
+  }
+  
+  async getUserOrders(userId: string, status?: Order['status']) {
+    const userOrders = userRepo.subcollection<Order>(userId, 'orders');
+    
+    let query = userOrders.query().orderBy('createdAt', 'desc');
+    
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+    
+    return await query.get();
+  }
+  
+  async updateOrderStatus(
+    userId: string,
+    orderId: string,
+    status: Order['status']
+  ) {
+    const userOrders = userRepo.subcollection<Order>(userId, 'orders');
+    
+    return await userOrders.update(orderId, {
+      status,
+      updatedAt: new Date().toISOString()
+    });
+  }
+}
+```
+
+### Blog Post Comments
+
+```typescript
+interface Comment {
+  id?: string;
+  authorId: string;
+  authorName: string;
+  text: string;
+  likes: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+class CommentService {
+  async addComment(
+    postId: string,
+    authorId: string,
+    text: string
+  ) {
+    const postComments = postRepo.subcollection<Comment>(postId, 'comments');
+    
+    // Get author info
+    const author = await userRepo.getById(authorId);
+    if (!author) throw new Error('Author not found');
+    
+    return await postComments.create({
+      authorId,
+      authorName: author.name,
+      text,
+      likes: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+  }
+  
+  async getComments(postId: string, limit: number = 50) {
+    const postComments = postRepo.subcollection<Comment>(postId, 'comments');
+    
+    return await postComments.query()
+      .orderBy('createdAt', 'desc')
+      .limit(limit)
+      .get();
+  }
+  
+  async likeComment(postId: string, commentId: string) {
+    const postComments = postRepo.subcollection<Comment>(postId, 'comments');
+    
+    const comment = await postComments.getById(commentId);
+    if (!comment) throw new Error('Comment not found');
+    
+    return await postComments.update(commentId, {
+      likes: comment.likes + 1
+    });
+  }
+}
+```
+
+### Organization Structure
+
+```typescript
+interface Team {
+  id?: string;
+  name: string;
+  description: string;
+  memberCount: number;
+  createdAt: string;
+}
+
+interface Member {
+  id?: string;
+  userId: string;
+  role: 'owner' | 'admin' | 'member';
+  joinedAt: string;
+}
+
+class OrganizationService {
+  async addTeam(orgId: string, teamData: Omit<Team, 'id'>) {
+    const orgTeams = organizationRepo.subcollection<Team>(orgId, 'teams');
+    return await orgTeams.create(teamData);
+  }
+  
+  async addTeamMember(
+    orgId: string,
+    teamId: string,
+    userId: string,
+    role: Member['role']
+  ) {
+    const orgTeams = organizationRepo.subcollection<Team>(orgId, 'teams');
+    const teamMembers = orgTeams.subcollection<Member>(teamId, 'members');
+    
+    const member = await teamMembers.create({
+      userId,
+      role,
+      joinedAt: new Date().toISOString()
+    });
+    
+    // Update member count
+    const team = await orgTeams.getById(teamId);
+    if (team) {
+      await orgTeams.update(teamId, {
+        memberCount: team.memberCount + 1
+      });
+    }
+    
+    return member;
+  }
+  
+  async getTeamMembers(orgId: string, teamId: string) {
+    const orgTeams = organizationRepo.subcollection<Team>(orgId, 'teams');
+    const teamMembers = orgTeams.subcollection<Member>(teamId, 'members');
+    
+    return await teamMembers.query()
+      .orderBy('joinedAt', 'asc')
+      .get();
+  }
+}
+```
+
+## Bulk Operations in Subcollections
+
+### Bulk Create
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+const orders = await userOrders.bulkCreate([
+  { product: 'Item 1', price: 10, quantity: 1, status: 'pending' },
+  { product: 'Item 2', price: 20, quantity: 2, status: 'pending' },
+  { product: 'Item 3', price: 30, quantity: 1, status: 'pending' }
+]);
+```
+
+### Bulk Update
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+await userOrders.bulkUpdate([
+  { id: 'order-1', data: { status: 'shipped' } },
+  { id: 'order-2', data: { status: 'shipped' } },
+  { id: 'order-3', data: { status: 'shipped' } }
+]);
+```
+
+### Query Update
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+// Mark all pending orders as processing
+const count = await userOrders.query()
+  .where('status', '==', 'pending')
+  .update({ status: 'processing' });
+
+console.log(`Updated ${count} orders`);
+```
+
+## Subcollections with Hooks
+
+Lifecycle hooks work the same way in subcollections.
+
+```typescript
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+// Add hook to subcollection
+userOrders.on('afterCreate', async (order) => {
+  console.log(`Order ${order.id} created for user-123`);
+  await sendOrderConfirmation('user-123', order);
+});
+
+const order = await userOrders.create({
+  product: 'Widget',
+  price: 99.99,
+  quantity: 1,
+  status: 'pending'
+});
+// Hook executes automatically
+```
+
+<Note>
+Hooks are instance-specific. Each subcollection repository has its own hooks, separate from the parent repository.
+</Note>
+
+## Best Practices
+
+<Steps>
+  <Step title="Use Subcollections for 1-to-Many Relationships">
+    Perfect for orders under users, comments under posts, etc.
+    
+    ```typescript
+    // ✅ Good - natural hierarchy
+    const userOrders = userRepo.subcollection('user-123', 'orders');
+    
+    // ❌ Less optimal - flat structure
+    const orders = await orderRepo.query()
+      .where('userId', '==', 'user-123')
+      .get();
+    ```
+  </Step>
+  
+  <Step title="Keep Hierarchies Shallow">
+    Avoid going more than 2-3 levels deep.
+    
+    ```typescript
+    // ✅ Good - 2 levels
+    users/user-123/orders/order-456
+    
+    // ⚠️ Consider flattening - 4 levels
+    orgs/org-1/teams/team-2/projects/proj-3/tasks/task-4
+    ```
+  </Step>
+  
+  <Step title="Don't Query Across All Subcollections">
+    Firestore can't efficiently query all subcollections of the same name across different parents.
+    
+    ```typescript
+    // ❌ Can't do this efficiently:
+    // "Get all orders from all users"
+    
+    // ✅ Instead, maintain a top-level collection:
+    const allOrders = await ordersRepo.query().get();
+    ```
+  </Step>
+  
+  <Step title="Clean Up Subcollections on Parent Delete">
+    Deleting a parent document doesn't delete its subcollections.
+    
+    ```typescript
+    userRepo.on('beforeDelete', async (user) => {
+      // Delete user's orders
+      const userOrders = userRepo.subcollection('orders', user.id);
+      const orders = await userOrders.query().get();
+      await userOrders.bulkDelete(orders.map(o => o.id));
+    });
+    ```
+  </Step>
+</Steps>
+
+## When NOT to Use Subcollections
+
+<Warning>
+Avoid subcollections when:
+- You need to query data across multiple parents
+- The relationship is many-to-many
+- You need to access the data frequently without the parent ID
+- The subcollection could grow unbounded (use top-level collection instead)
+</Warning>
+
+### Use Top-Level Collection Instead
+
+```typescript
+// ❌ Hard to query all products across all categories
+const categoryProducts = categoryRepo.subcollection('electronics', 'products');
+
+// ✅ Better - top-level products with category reference
+const allProducts = await productRepo.query()
+  .where('category', '==', 'electronics')
+  .get();
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="CRUD Operations" icon="database" href="/guides/crud-operations">
+    Master basic operations that work in subcollections
+  </Card>
+  <Card title="Queries" icon="magnifying-glass" href="/guides/queries">
+    Build complex queries in subcollections
+  </Card>
+  <Card title="Transactions" icon="lock" href="/guides/transactions">
+    Use transactions across parent and subcollection documents
+  </Card>
+  <Card title="Data Modeling" icon="diagram-project" href="/concepts/repository-pattern">
+    Learn when to use subcollections vs top-level collections
+  </Card>
+</CardGroup>

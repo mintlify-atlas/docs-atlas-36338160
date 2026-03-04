@@ -1,0 +1,539 @@
+---
+title: 'Pagination'
+description: 'Implement efficient pagination strategies for large datasets'
+icon: 'book-open'
+---
+
+FirestoreORM supports two pagination strategies: cursor-based pagination (recommended) and offset-based pagination. This guide covers both approaches with practical examples.
+
+## Cursor-Based Pagination (Recommended)
+
+Cursor-based pagination uses document IDs to mark your position in the result set. This is the most efficient approach for large datasets.
+
+### How It Works
+
+<Steps>
+  <Step title="Fetch First Page">
+    Request the first batch of documents with a limit.
+  </Step>
+  <Step title="Get Cursor">
+    Save the ID of the last document from the result.
+  </Step>
+  <Step title="Fetch Next Page">
+    Use the cursor ID to start after that document.
+  </Step>
+  <Step title="Repeat">
+    Continue until `nextCursorId` is undefined.
+  </Step>
+</Steps>
+
+### Basic Cursor Pagination
+
+```typescript
+// First page
+const { items, nextCursorId } = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .paginate(20);
+
+console.log(`Fetched ${items.length} users`);
+console.log(`Next cursor: ${nextCursorId}`);
+
+// Second page
+if (nextCursorId) {
+  const page2 = await userRepo.query()
+    .orderBy('createdAt', 'desc')
+    .paginate(20, nextCursorId);
+  
+  console.log(`Fetched ${page2.items.length} more users`);
+}
+```
+
+### Pagination with Filters
+
+Combine pagination with where clauses for filtered results.
+
+```typescript
+const { items, nextCursorId } = await productRepo.query()
+  .where('category', '==', 'electronics')
+  .where('inStock', '==', true)
+  .orderBy('price', 'desc')
+  .paginate(20, cursorId);
+```
+
+<Warning>
+You must include the same `where()` and `orderBy()` clauses for all pages, or results will be inconsistent.
+</Warning>
+
+### Complete Pagination Example
+
+```typescript
+interface PaginationState {
+  items: Product[];
+  hasMore: boolean;
+  cursor?: string;
+}
+
+class ProductService {
+  async getProducts(
+    category: string,
+    pageSize: number = 20,
+    cursor?: string
+  ): Promise<PaginationState> {
+    const { items, nextCursorId } = await productRepo.query()
+      .where('category', '==', category)
+      .where('inStock', '==', true)
+      .orderBy('price', 'asc')
+      .paginate(pageSize, cursor);
+    
+    return {
+      items,
+      hasMore: nextCursorId !== undefined,
+      cursor: nextCursorId
+    };
+  }
+}
+
+// Usage in your API
+app.get('/api/products', async (req, res) => {
+  const { category, cursor } = req.query;
+  const result = await productService.getProducts(category, 20, cursor);
+  res.json(result);
+});
+```
+
+### Pagination with Total Count
+
+Get paginated results along with the total count.
+
+```typescript
+const { items, nextCursorId, total } = await productRepo.query()
+  .where('category', '==', 'electronics')
+  .paginateWithCount(20, cursorId);
+
+console.log(`Showing ${items.length} of ${total} products`);
+console.log(`Has more: ${nextCursorId !== undefined}`);
+```
+
+<Info>
+`paginateWithCount()` runs an additional `count()` query, which adds to your Firestore costs. Use it only when you need to display total counts.
+</Info>
+
+### Bi-Directional Pagination
+
+Navigate both forward and backward through results.
+
+```typescript
+class PaginationHelper {
+  async getPage(
+    pageSize: number,
+    direction: 'next' | 'prev',
+    cursorId?: string
+  ) {
+    const query = userRepo.query()
+      .orderBy('createdAt', 'desc')
+      .limit(pageSize);
+    
+    if (direction === 'next' && cursorId) {
+      // Start after cursor
+      await query.startAfterId(cursorId);
+    } else if (direction === 'prev' && cursorId) {
+      // Reverse order and start after cursor
+      // Then reverse results again
+      // (Requires custom implementation)
+    }
+    
+    return query.get();
+  }
+}
+```
+
+## Offset-Based Pagination
+
+Offset pagination uses page numbers and skips documents to reach the desired page. This is less efficient for large datasets but simpler for traditional pagination UIs.
+
+### Basic Offset Pagination
+
+```typescript
+// Page 1 (0 skip)
+const page1 = await userRepo.query()
+  .where('status', '==', 'active')
+  .orderBy('createdAt', 'desc')
+  .offsetPaginate(1, 20);
+
+console.log(page1);
+// {
+//   items: [...],
+//   page: 1,
+//   pageSize: 20,
+//   total: 156,
+//   totalPages: 8
+// }
+
+// Page 2 (20 skip)
+const page2 = await userRepo.query()
+  .where('status', '==', 'active')
+  .orderBy('createdAt', 'desc')
+  .offsetPaginate(2, 20);
+```
+
+### Offset Pagination with Metadata
+
+```typescript
+const result = await orderRepo.query()
+  .where('status', '==', 'completed')
+  .orderBy('createdAt', 'desc')
+  .offsetPaginate(page, 20);
+
+console.log({
+  items: result.items,
+  currentPage: result.page,
+  totalPages: result.totalPages,
+  totalItems: result.total,
+  hasNextPage: result.page < result.totalPages,
+  hasPrevPage: result.page > 1
+});
+```
+
+### API Endpoint with Offset Pagination
+
+```typescript
+app.get('/api/users', async (req, res) => {
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 20;
+  
+  const result = await userRepo.query()
+    .where('status', '==', 'active')
+    .orderBy('createdAt', 'desc')
+    .offsetPaginate(page, limit);
+  
+  res.json({
+    data: result.items,
+    pagination: {
+      page: result.page,
+      pageSize: result.pageSize,
+      totalPages: result.totalPages,
+      total: result.total
+    }
+  });
+});
+```
+
+<Warning>
+Offset pagination becomes slower as page numbers increase because Firestore must scan and skip all previous documents.
+</Warning>
+
+## Performance Comparison
+
+### Cursor Pagination Cost
+
+```typescript
+// First page: 20 reads + 1 cursor read
+const page1 = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .paginate(20);
+// Cost: 20 document reads
+
+// Second page: 20 reads + 1 cursor read
+const page2 = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .paginate(20, page1.nextCursorId);
+// Cost: 21 document reads (20 + 1 for cursor lookup)
+```
+
+### Offset Pagination Cost
+
+```typescript
+// Page 1: 20 reads + 1 count query
+const page1 = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .offsetPaginate(1, 20);
+// Cost: 20 document reads + count aggregation
+
+// Page 5: 100 skipped + 20 reads + 1 count query
+const page5 = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .offsetPaginate(5, 20);
+// Cost: 120 document reads + count aggregation
+
+// Page 100: 1980 skipped + 20 reads + 1 count query
+const page100 = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .offsetPaginate(100, 20);
+// Cost: 2000 document reads + count aggregation (!)
+```
+
+<Info>
+**Key Insight**: Cursor pagination has constant cost per page, while offset pagination cost grows linearly with page number.
+</Info>
+
+## Simple List Pagination
+
+For basic use cases, use the repository's `list()` method.
+
+```typescript
+// First 20 users
+const firstPage = await userRepo.list(20);
+
+// Next 20 users
+const lastId = firstPage[firstPage.length - 1]?.id;
+const nextPage = await userRepo.list(20, lastId);
+
+// Include soft-deleted documents
+const allUsers = await userRepo.list(50, undefined, true);
+```
+
+<Note>
+`list()` is a simplified wrapper around cursor pagination. For more control, use `query().paginate()`.
+</Note>
+
+## Infinite Scroll Implementation
+
+### React Example
+
+```typescript
+import { useState, useEffect } from 'react';
+
+function UserList() {
+  const [users, setUsers] = useState<User[]>([]);
+  const [cursor, setCursor] = useState<string | undefined>();
+  const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  
+  const loadMore = async () => {
+    if (loading || !hasMore) return;
+    
+    setLoading(true);
+    try {
+      const response = await fetch(
+        `/api/users?cursor=${cursor || ''}`
+      );
+      const data = await response.json();
+      
+      setUsers(prev => [...prev, ...data.items]);
+      setCursor(data.nextCursor);
+      setHasMore(!!data.nextCursor);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  useEffect(() => {
+    loadMore();
+  }, []);
+  
+  return (
+    <div>
+      {users.map(user => (
+        <UserCard key={user.id} user={user} />
+      ))}
+      {hasMore && (
+        <button onClick={loadMore} disabled={loading}>
+          {loading ? 'Loading...' : 'Load More'}
+        </button>
+      )}
+    </div>
+  );
+}
+```
+
+### Backend API
+
+```typescript
+app.get('/api/users', async (req, res) => {
+  const cursor = req.query.cursor as string | undefined;
+  
+  const { items, nextCursorId } = await userRepo.query()
+    .where('status', '==', 'active')
+    .orderBy('createdAt', 'desc')
+    .paginate(20, cursor);
+  
+  res.json({
+    items,
+    nextCursor: nextCursorId,
+    hasMore: !!nextCursorId
+  });
+});
+```
+
+## Traditional Page Numbers
+
+### Page Number UI
+
+```typescript
+interface PaginationProps {
+  currentPage: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+}
+
+function Pagination({ currentPage, totalPages, onPageChange }: PaginationProps) {
+  const pages = Array.from({ length: totalPages }, (_, i) => i + 1);
+  
+  return (
+    <div className="pagination">
+      <button 
+        onClick={() => onPageChange(currentPage - 1)}
+        disabled={currentPage === 1}
+      >
+        Previous
+      </button>
+      
+      {pages.map(page => (
+        <button
+          key={page}
+          onClick={() => onPageChange(page)}
+          className={page === currentPage ? 'active' : ''}
+        >
+          {page}
+        </button>
+      ))}
+      
+      <button
+        onClick={() => onPageChange(currentPage + 1)}
+        disabled={currentPage === totalPages}
+      >
+        Next
+      </button>
+    </div>
+  );
+}
+```
+
+### Usage
+
+```typescript
+function UserTable() {
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState(null);
+  
+  useEffect(() => {
+    async function loadPage() {
+      const result = await userRepo.query()
+        .where('status', '==', 'active')
+        .orderBy('createdAt', 'desc')
+        .offsetPaginate(page, 20);
+      setData(result);
+    }
+    loadPage();
+  }, [page]);
+  
+  if (!data) return <div>Loading...</div>;
+  
+  return (
+    <div>
+      <table>
+        {data.items.map(user => (
+          <tr key={user.id}>
+            <td>{user.name}</td>
+            <td>{user.email}</td>
+          </tr>
+        ))}
+      </table>
+      
+      <Pagination
+        currentPage={data.page}
+        totalPages={data.totalPages}
+        onPageChange={setPage}
+      />
+    </div>
+  );
+}
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Use Cursor Pagination for Large Datasets">
+    Cursor pagination has constant performance regardless of page depth.
+    
+    ```typescript
+    // ✅ Good - scales well
+    await userRepo.query()
+      .orderBy('createdAt', 'desc')
+      .paginate(20, cursor);
+    
+    // ❌ Slow for high page numbers
+    await userRepo.query()
+      .orderBy('createdAt', 'desc')
+      .offsetPaginate(100, 20);
+    ```
+  </Step>
+  
+  <Step title="Always Include orderBy() for Consistent Results">
+    Without ordering, document order is undefined and can change.
+    
+    ```typescript
+    // ✅ Predictable pagination
+    await userRepo.query()
+      .orderBy('createdAt', 'desc')
+      .paginate(20);
+    
+    // ❌ Unpredictable results
+    await userRepo.query()
+      .paginate(20);
+    ```
+  </Step>
+  
+  <Step title="Keep Page Sizes Reasonable">
+    Balance between number of requests and data per request.
+    
+    ```typescript
+    // ✅ Good - 20-50 items per page
+    await userRepo.query().paginate(20);
+    
+    // ❌ Too small - too many requests
+    await userRepo.query().paginate(5);
+    
+    // ❌ Too large - slow loading
+    await userRepo.query().paginate(1000);
+    ```
+  </Step>
+  
+  <Step title="Cache Total Counts">
+    Don't recalculate total count on every page request.
+    
+    ```typescript
+    // Cache for 5 minutes
+    const cachedTotal = await cache.get('user_count');
+    if (!cachedTotal) {
+      const total = await userRepo.query().count();
+      await cache.set('user_count', total, 300);
+    }
+    ```
+  </Step>
+</Steps>
+
+## Choosing the Right Strategy
+
+<CardGroup cols={2}>
+  <Card title="Use Cursor Pagination When" icon="check">
+    - Implementing infinite scroll
+    - Working with large datasets (1000+ documents)
+    - Performance is critical
+    - Users mostly navigate forward
+  </Card>
+  
+  <Card title="Use Offset Pagination When" icon="list-ol">
+    - Implementing traditional page numbers
+    - Dataset is small (fewer than 1000 documents)
+    - Users need to jump to specific pages
+    - You need total page count
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Queries" icon="magnifying-glass" href="/guides/queries">
+    Build complex queries with filtering and sorting
+  </Card>
+  <Card title="Streaming" icon="water" href="/guides/streaming">
+    Process large result sets efficiently with streaming
+  </Card>
+  <Card title="Real-time Updates" icon="bolt" href="/guides/realtime">
+    Subscribe to live query updates
+  </Card>
+  <Card title="Performance" icon="gauge" href="/best-practices/performance-costs">
+    Optimize your queries and reduce costs
+  </Card>
+</CardGroup>

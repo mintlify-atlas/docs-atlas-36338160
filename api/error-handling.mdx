@@ -1,0 +1,276 @@
+---
+title: Error Handling
+description: Express middleware and utilities for handling Firestore errors
+---
+
+The error handling module provides Express middleware and utilities for gracefully handling errors from FirestoreORM operations, converting them into appropriate HTTP responses.
+
+## Error Handler Middleware
+
+### errorHandler
+
+Express middleware that maps repository errors to appropriate HTTP responses. Automatically handles ValidationError, NotFoundError, ConflictError, FirestoreIndexError, and generic errors.
+
+```typescript
+function errorHandler(
+  err: any,
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void
+```
+
+#### Parameters
+
+<ParamField path="err" type="Error" required>
+  Error object thrown by repository or application code
+</ParamField>
+
+<ParamField path="req" type="Request" required>
+  Express request object
+</ParamField>
+
+<ParamField path="res" type="Response" required>
+  Express response object
+</ParamField>
+
+<ParamField path="next" type="NextFunction" required>
+  Express next function for passing control to the next middleware
+</ParamField>
+
+#### Error Mapping
+
+The middleware maps errors to HTTP status codes as follows:
+
+| Error Type | Status Code | Response Format |
+|------------|-------------|----------------|
+| ValidationError | 400 | `{ error: "ValidationError", details: [...] }` |
+| NotFoundError | 404 | `{ error: "NotFoundError", message: "..." }` |
+| FirestoreIndexError | 404 | `{ error: "Query needs to be indexed", message: "...", url: "..." }` |
+| ConflictError | 409 | `{ error: "ConflictError", message: "..." }` |
+| Other Errors | 500 | `{ error: "InternalServerError", message: "Something went wrong" }` |
+
+#### Usage Examples
+
+##### Register as Global Error Handler
+
+```typescript
+import express from 'express';
+import { errorHandler } from '@spacelabs/firestoreorm/core/ErrorHandler';
+
+const app = express();
+
+// ... your routes ...
+
+// Register error handler as the last middleware
+app.use(errorHandler);
+
+app.listen(3000);
+```
+
+##### Use in Route Handlers
+
+```typescript
+import { errorHandler } from '@spacelabs/firestoreorm/core/ErrorHandler';
+
+app.post('/users', async (req, res, next) => {
+  try {
+    const user = await userRepo.create(req.body);
+    res.json(user);
+  } catch (error) {
+    next(error); // errorHandler will process this
+  }
+});
+```
+
+##### ValidationError Response (400)
+
+When validation fails, the middleware returns detailed error information:
+
+```json
+{
+  "error": "ValidationError",
+  "details": [
+    {
+      "path": ["email"],
+      "message": "Invalid email"
+    },
+    {
+      "path": ["age"],
+      "message": "Must be positive"
+    }
+  ]
+}
+```
+
+##### NotFoundError Response (404)
+
+When a document is not found:
+
+```json
+{
+  "error": "NotFoundError",
+  "message": "Document with id user-123 not found"
+}
+```
+
+##### ConflictError Response (409)
+
+When there's a conflict (e.g., duplicate unique field):
+
+```json
+{
+  "error": "ConflictError",
+  "message": "Email already exists"
+}
+```
+
+##### FirestoreIndexError Response (404)
+
+When a query requires a Firestore index:
+
+```json
+{
+  "error": "Query needs to be indexed",
+  "message": "The query requires an index...",
+  "url": "https://console.firebase.google.com/..."
+}
+```
+
+## Error Parser
+
+### parseFirestoreError
+
+Parses Firestore errors and converts them into FirestoreORM-specific error types.
+
+```typescript
+function parseFirestoreError(error: any): Error
+```
+
+#### Parameters
+
+<ParamField path="error" type="any" required>
+  The error object from Firestore operations
+</ParamField>
+
+#### Returns
+
+<ResponseField name="Error" type="Error">
+  Returns a FirestoreIndexError if the error is related to missing indexes, otherwise returns the original error.
+</ResponseField>
+
+#### Usage Example
+
+```typescript
+import { parseFirestoreError } from '@spacelabs/firestoreorm/core/ErrorParser';
+
+try {
+  // Perform Firestore operation
+  const results = await collection
+    .where('category', '==', 'electronics')
+    .where('price', '>', 100)
+    .orderBy('createdAt', 'desc')
+    .get();
+} catch (error) {
+  const parsedError = parseFirestoreError(error);
+  
+  if (parsedError instanceof FirestoreIndexError) {
+    console.log('Index URL:', parsedError.indexUrl);
+    console.log('Required fields:', parsedError.fields);
+  }
+  
+  throw parsedError;
+}
+```
+
+#### FirestoreIndexError Detection
+
+The parser detects Firestore index errors by checking:
+- Error code is 9 (FAILED_PRECONDITION)
+- Error details contain "requires an index"
+
+When detected, it extracts:
+- **Index URL**: Direct link to create the required index in Firebase Console
+- **Field names**: Array of fields that need to be indexed
+
+## Complete Example
+
+Here's a complete example integrating error handling in an Express application:
+
+```typescript
+import express from 'express';
+import { Repository } from '@spacelabs/firestoreorm';
+import { errorHandler } from '@spacelabs/firestoreorm/core/ErrorHandler';
+import { Firestore } from '@google-cloud/firestore';
+import { z } from 'zod';
+import { makeValidator } from '@spacelabs/firestoreorm/core/Validation';
+
+const app = express();
+app.use(express.json());
+
+const db = new Firestore();
+
+// Define schema and validator
+const userSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  age: z.number().positive()
+});
+
+const userValidator = makeValidator(userSchema);
+
+// Create repository
+interface User {
+  name: string;
+  email: string;
+  age: number;
+}
+
+const userRepo = new Repository<User>({
+  firestore: db,
+  collectionPath: 'users',
+  validator: userValidator
+});
+
+// Routes
+app.post('/users', async (req, res, next) => {
+  try {
+    const user = await userRepo.create(req.body);
+    res.status(201).json(user);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/users/:id', async (req, res, next) => {
+  try {
+    const user = await userRepo.findById(req.params.id);
+    res.json(user);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch('/users/:id', async (req, res, next) => {
+  try {
+    const user = await userRepo.update(req.params.id, req.body);
+    res.json(user);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Error handler must be registered last
+app.use(errorHandler);
+
+app.listen(3000, () => {
+  console.log('Server running on port 3000');
+});
+```
+
+## Best Practices
+
+1. **Always register errorHandler last** - It should be the final middleware in your Express app
+2. **Use next(error) in async handlers** - Pass errors to the error handler using `next()`
+3. **Don't expose internal errors** - The middleware automatically sanitizes 500 errors to prevent leaking sensitive information
+4. **Log errors before handling** - Consider adding logging middleware before the error handler for debugging

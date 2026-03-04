@@ -1,0 +1,688 @@
+---
+title: 'Express.js Integration'
+description: 'Complete guide to integrating FirestoreORM with Express.js applications'
+---
+
+# Express.js Integration
+
+Integrate FirestoreORM with Express.js to build robust REST APIs with automatic error handling, validation, and clean separation of concerns.
+
+## Quick Start
+
+<Steps>
+  <Step title="Set up Firebase and Repository">
+    Create a centralized repository module that initializes your Firestore connection and repository instances.
+
+    ```typescript repositories/user.repository.ts
+    import { FirestoreRepository } from '@spacelabstech/firestoreorm';
+    import { db } from '../config/firebase';
+    import { userSchema, User } from '../schemas/user.schema';
+
+    export const userRepo = FirestoreRepository.withSchema<User>(
+      db,
+      'users',
+      userSchema
+    );
+    ```
+  </Step>
+
+  <Step title="Create Express Routes">
+    Build RESTful routes using the repository. FirestoreORM automatically validates data and provides detailed error information.
+
+    ```typescript routes/user.routes.ts
+    import express from 'express';
+    import { userRepo } from '../repositories/user.repository';
+    import { ValidationError, NotFoundError } from '@spacelabstech/firestoreorm';
+
+    const router = express.Router();
+
+    router.post('/users', async (req, res, next) => {
+      try {
+        const user = await userRepo.create({
+          ...req.body,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+        res.status(201).json(user);
+      } catch (error) {
+        next(error); // errorHandler middleware will process this
+      }
+    });
+
+    router.get('/users', async (req, res, next) => {
+      try {
+        const { page = 1, limit = 20, status } = req.query;
+        
+        let query = userRepo.query();
+        
+        if (status) {
+          query = query.where('status', '==', status);
+        }
+        
+        const result = await query
+          .orderBy('createdAt', 'desc')
+          .offsetPaginate(Number(page), Number(limit));
+        
+        res.json(result);
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    router.get('/users/:id', async (req, res, next) => {
+      try {
+        const user = await userRepo.getById(req.params.id);
+        
+        if (!user) {
+          throw new NotFoundError(`User with id ${req.params.id} not found`);
+        }
+        
+        res.json(user);
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    router.patch('/users/:id', async (req, res, next) => {
+      try {
+        const user = await userRepo.update(req.params.id, {
+          ...req.body,
+          updatedAt: new Date().toISOString()
+        });
+        res.json(user);
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    router.delete('/users/:id', async (req, res, next) => {
+      try {
+        await userRepo.softDelete(req.params.id);
+        res.status(204).send();
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    export default router;
+    ```
+  </Step>
+
+  <Step title="Register Error Handler">
+    Add the built-in error handler as the last middleware to automatically convert ORM errors to proper HTTP responses.
+
+    ```typescript app.ts
+    import express from 'express';
+    import { errorHandler } from '@spacelabstech/firestoreorm';
+    import userRoutes from './routes/user.routes';
+
+    const app = express();
+
+    app.use(express.json());
+    app.use('/api', userRoutes);
+    app.use(errorHandler); // Must be last
+
+    app.listen(3000, () => {
+      console.log('Server running on port 3000');
+    });
+    ```
+  </Step>
+</Steps>
+
+## Complete REST API Example
+
+Here's a full-featured Express API with all CRUD operations, filtering, and pagination.
+
+### Schema Definition
+
+```typescript schemas/user.schema.ts
+import { z } from 'zod';
+
+export const userSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1, 'Name is required'),
+  email: z.string().email('Invalid email address'),
+  age: z.number().int().positive().optional(),
+  status: z.enum(['active', 'inactive', 'suspended']).default('active'),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+
+export type User = z.infer<typeof userSchema>;
+```
+
+### Advanced Route Handlers
+
+<CodeGroup>
+```typescript List with Filters
+router.get('/users', async (req, res, next) => {
+  try {
+    const { 
+      page = '1', 
+      limit = '20', 
+      status, 
+      minAge,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
+    
+    let query = userRepo.query();
+    
+    // Apply filters
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+    
+    if (minAge) {
+      query = query.where('age', '>=', Number(minAge));
+    }
+    
+    // Apply sorting and pagination
+    const result = await query
+      .orderBy(sortBy as string, sortOrder as 'asc' | 'desc')
+      .offsetPaginate(Number(page), Number(limit));
+    
+    res.json({
+      data: result.items,
+      pagination: {
+        page: result.page,
+        limit: result.limit,
+        total: result.total,
+        totalPages: result.totalPages
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+```
+
+```typescript Cursor-Based Pagination
+router.get('/users/feed', async (req, res, next) => {
+  try {
+    const { cursor, limit = '20' } = req.query;
+    
+    const result = await userRepo.query()
+      .where('status', '==', 'active')
+      .orderBy('createdAt', 'desc')
+      .paginate(Number(limit), cursor as string | undefined);
+    
+    res.json({
+      data: result.items,
+      nextCursor: result.nextCursorId,
+      hasMore: !!result.nextCursorId
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+```
+
+```typescript Bulk Operations
+router.post('/users/bulk', async (req, res, next) => {
+  try {
+    const users = req.body.users.map((user: any) => ({
+      ...user,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }));
+    
+    const created = await userRepo.bulkCreate(users);
+    res.status(201).json({ created: created.length, users: created });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/users/bulk-update', async (req, res, next) => {
+  try {
+    const updates = req.body.updates.map((update: any) => ({
+      id: update.id,
+      data: {
+        ...update.data,
+        updatedAt: new Date().toISOString()
+      }
+    }));
+    
+    await userRepo.bulkUpdate(updates);
+    res.json({ updated: updates.length });
+  } catch (error) {
+    next(error);
+  }
+});
+```
+
+```typescript Search and Aggregation
+router.get('/users/search', async (req, res, next) => {
+  try {
+    const { email } = req.query;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email query required' });
+    }
+    
+    const users = await userRepo.findByField('email', email as string);
+    res.json(users);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/users/stats', async (req, res, next) => {
+  try {
+    const totalActive = await userRepo.query()
+      .where('status', '==', 'active')
+      .count();
+    
+    const avgAge = await userRepo.query()
+      .where('age', '>', 0)
+      .aggregate('age', 'avg');
+    
+    res.json({
+      totalActive,
+      averageAge: avgAge
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+```
+</CodeGroup>
+
+## Error Handling
+
+The built-in `errorHandler` middleware automatically maps ORM errors to appropriate HTTP status codes.
+
+### Automatic Error Mapping
+
+| Error Type | HTTP Status | Description |
+|------------|-------------|-------------|
+| `ValidationError` | 400 | Schema validation failed |
+| `NotFoundError` | 404 | Document not found |
+| `ConflictError` | 409 | Duplicate or constraint violation |
+| `FirestoreIndexError` | 400 | Missing composite index |
+| Others | 500 | Internal server error |
+
+### Error Response Format
+
+```json
+{
+  "error": "Validation Error",
+  "details": [
+    {
+      "path": ["email"],
+      "message": "Invalid email address"
+    },
+    {
+      "path": ["age"],
+      "message": "Expected number, received string"
+    }
+  ]
+}
+```
+
+<Note>
+The error handler must be registered **after** all routes and **before** starting the server. This ensures all route errors are caught and formatted correctly.
+</Note>
+
+### Custom Error Handling
+
+If you need custom error responses, create your own error handler:
+
+```typescript middleware/error-handler.ts
+import { Request, Response, NextFunction } from 'express';
+import { 
+  ValidationError, 
+  NotFoundError, 
+  ConflictError,
+  FirestoreIndexError 
+} from '@spacelabstech/firestoreorm';
+
+export function customErrorHandler(
+  err: Error,
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  // Log all errors
+  console.error('API Error:', err);
+
+  if (err instanceof ValidationError) {
+    return res.status(400).json({
+      success: false,
+      error: 'Validation failed',
+      fields: err.issues
+    });
+  }
+
+  if (err instanceof NotFoundError) {
+    return res.status(404).json({
+      success: false,
+      error: err.message
+    });
+  }
+
+  if (err instanceof ConflictError) {
+    return res.status(409).json({
+      success: false,
+      error: err.message
+    });
+  }
+
+  if (err instanceof FirestoreIndexError) {
+    return res.status(400).json({
+      success: false,
+      error: 'Database index required',
+      indexUrl: err.indexUrl
+    });
+  }
+
+  // Default error response
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error'
+  });
+}
+```
+
+## Service Layer Pattern
+
+For larger applications, add a service layer between routes and repositories.
+
+```typescript services/user.service.ts
+import { userRepo } from '../repositories/user.repository';
+import { NotFoundError } from '@spacelabstech/firestoreorm';
+import { emailService } from './email.service';
+
+export class UserService {
+  async createUser(data: any) {
+    const user = await userRepo.create({
+      ...data,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    
+    // Send welcome email
+    await emailService.sendWelcome(user.email, user.name);
+    
+    return user;
+  }
+
+  async getUserById(id: string) {
+    const user = await userRepo.getById(id);
+    
+    if (!user) {
+      throw new NotFoundError(`User ${id} not found`);
+    }
+    
+    return user;
+  }
+
+  async updateUserStatus(id: string, status: string) {
+    const user = await this.getUserById(id);
+    
+    return userRepo.update(id, {
+      status,
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  async getActiveUsers(page: number = 1, limit: number = 20) {
+    return userRepo.query()
+      .where('status', '==', 'active')
+      .orderBy('createdAt', 'desc')
+      .offsetPaginate(page, limit);
+  }
+}
+
+export const userService = new UserService();
+```
+
+```typescript routes/user.routes.ts
+import express from 'express';
+import { userService } from '../services/user.service';
+
+const router = express.Router();
+
+router.post('/users', async (req, res, next) => {
+  try {
+    const user = await userService.createUser(req.body);
+    res.status(201).json(user);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/users/:id', async (req, res, next) => {
+  try {
+    const user = await userService.getUserById(req.params.id);
+    res.json(user);
+  } catch (error) {
+    next(error);
+  }
+});
+
+export default router;
+```
+
+## Lifecycle Hooks
+
+Use hooks to add cross-cutting concerns like logging, analytics, and notifications without cluttering route handlers.
+
+```typescript repositories/user.repository.ts
+import { FirestoreRepository } from '@spacelabstech/firestoreorm';
+import { db } from '../config/firebase';
+import { userSchema, User } from '../schemas/user.schema';
+import { auditLog } from '../services/audit.service';
+import { emailService } from '../services/email.service';
+
+export const userRepo = FirestoreRepository.withSchema<User>(
+  db,
+  'users',
+  userSchema
+);
+
+// Log all user creations
+userRepo.on('afterCreate', async (user) => {
+  await auditLog.record('user_created', {
+    userId: user.id,
+    email: user.email,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Send welcome email
+userRepo.on('afterCreate', async (user) => {
+  await emailService.sendWelcomeEmail(user.email, user.name);
+});
+
+// Track status changes
+userRepo.on('afterUpdate', async (user) => {
+  await auditLog.record('user_updated', {
+    userId: user.id,
+    status: user.status,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Log deletions
+userRepo.on('afterSoftDelete', async (user) => {
+  await auditLog.record('user_deleted', {
+    userId: user.id,
+    timestamp: new Date().toISOString()
+  });
+});
+```
+
+<Tip>
+Hooks run automatically for all repository operations, ensuring consistent behavior across your API without duplicating code in every route handler.
+</Tip>
+
+## Middleware Integration
+
+### Authentication Middleware
+
+```typescript middleware/auth.ts
+import { Request, Response, NextFunction } from 'express';
+import { userRepo } from '../repositories/user.repository';
+
+export async function authenticate(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+    
+    // Verify token and get user ID (your auth logic)
+    const userId = await verifyToken(token);
+    
+    // Fetch user from Firestore
+    const user = await userRepo.getById(userId);
+    
+    if (!user || user.status !== 'active') {
+      return res.status(401).json({ error: 'Invalid user' });
+    }
+    
+    // Attach user to request
+    req.user = user;
+    next();
+  } catch (error) {
+    res.status(401).json({ error: 'Authentication failed' });
+  }
+}
+```
+
+```typescript routes/protected.routes.ts
+import express from 'express';
+import { authenticate } from '../middleware/auth';
+import { orderRepo } from '../repositories/order.repository';
+
+const router = express.Router();
+
+// Protected route - requires authentication
+router.get('/orders', authenticate, async (req, res, next) => {
+  try {
+    const orders = await orderRepo.query()
+      .where('userId', '==', req.user.id)
+      .orderBy('createdAt', 'desc')
+      .limit(50)
+      .get();
+    
+    res.json(orders);
+  } catch (error) {
+    next(error);
+  }
+});
+
+export default router;
+```
+
+## Testing
+
+Test your Express routes by mocking the repository.
+
+```typescript __tests__/user.routes.test.ts
+import request from 'supertest';
+import express from 'express';
+import userRoutes from '../routes/user.routes';
+import { userRepo } from '../repositories/user.repository';
+import { errorHandler } from '@spacelabstech/firestoreorm';
+
+// Mock the repository
+jest.mock('../repositories/user.repository');
+
+const app = express();
+app.use(express.json());
+app.use('/api', userRoutes);
+app.use(errorHandler);
+
+describe('User Routes', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('POST /api/users', () => {
+    it('should create a user', async () => {
+      const mockUser = {
+        id: 'user-123',
+        name: 'John Doe',
+        email: 'john@example.com',
+        status: 'active'
+      };
+
+      (userRepo.create as jest.Mock).mockResolvedValue(mockUser);
+
+      const response = await request(app)
+        .post('/api/users')
+        .send({
+          name: 'John Doe',
+          email: 'john@example.com'
+        })
+        .expect(201);
+
+      expect(response.body).toMatchObject(mockUser);
+      expect(userRepo.create).toHaveBeenCalled();
+    });
+
+    it('should return 400 for invalid data', async () => {
+      const validationError = new ValidationError('Validation failed', []);
+      (userRepo.create as jest.Mock).mockRejectedValue(validationError);
+
+      await request(app)
+        .post('/api/users')
+        .send({ name: '' })
+        .expect(400);
+    });
+  });
+
+  describe('GET /api/users/:id', () => {
+    it('should return a user', async () => {
+      const mockUser = { id: 'user-123', name: 'John Doe' };
+      (userRepo.getById as jest.Mock).mockResolvedValue(mockUser);
+
+      const response = await request(app)
+        .get('/api/users/user-123')
+        .expect(200);
+
+      expect(response.body).toEqual(mockUser);
+    });
+
+    it('should return 404 if user not found', async () => {
+      (userRepo.getById as jest.Mock).mockResolvedValue(null);
+
+      await request(app)
+        .get('/api/users/unknown')
+        .expect(404);
+    });
+  });
+});
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Repository Organization" icon="folder-tree">
+    Create repositories in a centralized `repositories/` directory and export them as singleton instances. Never create repository instances in route handlers.
+  </Card>
+  
+  <Card title="Error Handling" icon="triangle-exclamation">
+    Always use `try/catch` blocks in async route handlers and pass errors to `next()`. Register the error handler middleware last.
+  </Card>
+  
+  <Card title="Validation" icon="check">
+    Let FirestoreORM handle validation through Zod schemas. Don't duplicate validation logic in route handlers.
+  </Card>
+  
+  <Card title="Pagination" icon="arrow-right-arrow-left">
+    Always use pagination on list endpoints. Prefer cursor-based pagination for better performance on large datasets.
+  </Card>
+</CardGroup>
+
+<Tip>
+For production applications, add request validation middleware, rate limiting, and proper logging alongside FirestoreORM's built-in features.
+</Tip>

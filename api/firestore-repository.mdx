@@ -1,0 +1,916 @@
+---
+title: "FirestoreRepository"
+description: "Complete API reference for the FirestoreRepository class - type-safe Firestore operations with validation, soft deletes, and lifecycle hooks"
+---
+
+# FirestoreRepository\<T\>
+
+Type-safe Firestore repository with validation, soft deletes, and lifecycle hooks. Provides a clean API for common database operations with built-in error handling.
+
+## Constructor
+
+```typescript
+new FirestoreRepository<T>(db: Firestore, collectionPath: string, validator?: Validator<T>, parentPath?: string)
+```
+
+<ParamField path="db" type="Firestore" required>
+  Firebase Admin Firestore instance
+</ParamField>
+
+<ParamField path="collectionPath" type="string" required>
+  Path to the Firestore collection
+</ParamField>
+
+<ParamField path="validator" type="Validator<T>">
+  Optional Zod validator for schema validation
+</ParamField>
+
+<ParamField path="parentPath" type="string">
+  Internal parameter for subcollection tracking
+</ParamField>
+
+## Static Methods
+
+### withSchema
+
+Create a repository instance with Zod schema validation. Automatically validates all create and update operations.
+
+```typescript
+static withSchema<U extends { id?: ID }>(
+  db: Firestore,
+  collection: string,
+  schema: z.ZodObject<any>
+): FirestoreRepository<U>
+```
+
+<ParamField path="db" type="Firestore" required>
+  Firestore database instance
+</ParamField>
+
+<ParamField path="collection" type="string" required>
+  Collection path
+</ParamField>
+
+<ParamField path="schema" type="z.ZodObject<any>" required>
+  Zod schema for validation
+</ParamField>
+
+<ResponseField name="return" type="FirestoreRepository<U>">
+  Repository instance with validation enabled
+</ResponseField>
+
+```typescript
+const userSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  age: z.number().int().positive().optional()
+});
+
+const userRepo = FirestoreRepository.withSchema<User>(
+  db,
+  'users',
+  userSchema
+);
+```
+
+## Collection Methods
+
+### subcollection
+
+Access a subcollection under a specific parent document.
+
+```typescript
+subcollection<S extends { id?: ID }>(
+  parentId: ID,
+  subcollectionName: string,
+  schema?: z.ZodObject<any>
+): FirestoreRepository<S>
+```
+
+<ParamField path="parentId" type="string" required>
+  Parent document ID
+</ParamField>
+
+<ParamField path="subcollectionName" type="string" required>
+  Name of the subcollection
+</ParamField>
+
+<ParamField path="schema" type="z.ZodObject<any>">
+  Optional Zod schema for subcollection validation
+</ParamField>
+
+```typescript
+// Access orders for a specific user
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+await userOrders.create({ product: 'Widget', price: 99 });
+
+// Nested subcollections
+const comments = postRepo
+  .subcollection<Comment>('post-123', 'comments')
+  .subcollection<Reply>('comment-456', 'replies');
+```
+
+### getParentId
+
+Get the parent document ID if this is a subcollection. Returns null for top-level collections.
+
+```typescript
+getParentId(): ID | null
+```
+
+```typescript
+const userOrders = userRepo.subcollection('user-123', 'orders');
+console.log(userOrders.getParentId()); // 'user-123'
+
+const topLevel = new FirestoreRepository(db, 'users');
+console.log(topLevel.getParentId()); // null
+```
+
+### getCollectionPath
+
+Get the full Firestore path for this collection.
+
+```typescript
+getCollectionPath(): string
+```
+
+```typescript
+const repo = new FirestoreRepository(db, 'users');
+console.log(repo.getCollectionPath()); // 'users'
+
+const orders = userRepo.subcollection('user-123', 'orders');
+console.log(orders.getCollectionPath()); // 'users/user-123/orders'
+```
+
+### isSubcollection
+
+Check if this repository represents a subcollection.
+
+```typescript
+isSubcollection(): boolean
+```
+
+```typescript
+const users = new FirestoreRepository(db, 'users');
+console.log(users.isSubcollection()); // false
+
+const orders = users.subcollection('user-123', 'orders');
+console.log(orders.isSubcollection()); // true
+```
+
+## Lifecycle Hooks
+
+### on
+
+Register a lifecycle hook to run before or after operations. Hooks allow you to add custom logic like logging, validation, or side effects.
+
+```typescript
+on(event: HookEvent, fn: HookFn<T>): void
+```
+
+<ParamField path="event" type="HookEvent" required>
+  The lifecycle event to hook into. Available events:
+  - Single operations: `beforeCreate`, `afterCreate`, `beforeUpdate`, `afterUpdate`, `beforeDelete`, `afterDelete`, `beforeSoftDelete`, `afterSoftDelete`, `beforeRestore`, `afterRestore`
+  - Bulk operations: `beforeBulkCreate`, `afterBulkCreate`, `beforeBulkUpdate`, `afterBulkUpdate`, `beforeBulkDelete`, `afterBulkDelete`, `beforeBulkSoftDelete`, `afterBulkSoftDelete`, `beforeBulkRestore`, `afterBulkRestore`
+</ParamField>
+
+<ParamField path="fn" type="HookFn<T>" required>
+  Async or sync function to execute
+</ParamField>
+
+```typescript
+// Log all creates
+userRepo.on('afterCreate', (user) => {
+  console.log(`User created: ${user.id}`);
+});
+
+// Send email on user creation
+userRepo.on('afterCreate', async (user) => {
+  await sendWelcomeEmail(user.email);
+});
+
+// Validate business logic before update
+orderRepo.on('beforeUpdate', (data) => {
+  if (data.status === 'shipped' && !data.trackingNumber) {
+    throw new Error('Tracking number required for shipped orders');
+  }
+});
+
+// Bulk operation hooks
+userRepo.on('afterBulkDelete', async ({ ids, documents }) => {
+  await auditLog.record('users_deleted', { count: ids.length });
+});
+```
+
+## CRUD Operations
+
+### create
+
+Create a new document in the collection. Automatically adds soft delete support and runs validation if schema is configured.
+
+```typescript
+async create(data: T): Promise<T & { id: ID }>
+```
+
+<ParamField path="data" type="T" required>
+  Document data (without ID)
+</ParamField>
+
+<ResponseField name="return" type="T & { id: ID }">
+  Created document with generated ID
+</ResponseField>
+
+**Throws:** `ValidationError` if schema validation fails
+
+```typescript
+// Simple create
+const user = await userRepo.create({
+  name: 'John Doe',
+  email: 'john@example.com'
+});
+console.log(user.id); // Auto-generated ID
+
+// With validation error handling
+try {
+  await userRepo.create({ name: '', email: 'invalid' });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.log(error.issues); // Field-specific errors
+  }
+}
+```
+
+### bulkCreate
+
+Create multiple documents in a single batched operation. More efficient than calling create() in a loop. Uses Firestore batches (500 ops per batch).
+
+```typescript
+async bulkCreate(dataArray: T[]): Promise<(T & { id: ID })[]>
+```
+
+<ParamField path="dataArray" type="T[]" required>
+  Array of documents to create
+</ParamField>
+
+<ResponseField name="return" type="(T & { id: ID })[]">
+  Array of created documents with generated IDs
+</ResponseField>
+
+**Throws:** `ValidationError` if any document fails validation
+
+```typescript
+// Bulk insert users
+const users = await userRepo.bulkCreate([
+  { name: 'Alice', email: 'alice@example.com' },
+  { name: 'Bob', email: 'bob@example.com' },
+  { name: 'Charlie', email: 'charlie@example.com' }
+]);
+
+// Import from CSV
+const products = csvData.map(row => ({
+  name: row.name,
+  price: parseFloat(row.price),
+  sku: row.sku
+}));
+await productRepo.bulkCreate(products);
+```
+
+### getById
+
+Retrieve a document by its ID. Returns null if the document doesn't exist or is soft-deleted (unless includeDeleted is true).
+
+```typescript
+async getById(id: ID, includeDeleted = false): Promise<(T & {id: ID}) | null>
+```
+
+<ParamField path="id" type="string" required>
+  Document ID
+</ParamField>
+
+<ParamField path="includeDeleted" type="boolean" default="false">
+  If true, return soft-deleted documents
+</ParamField>
+
+<ResponseField name="return" type="(T & {id: ID}) | null">
+  Document with ID or null if not found
+</ResponseField>
+
+```typescript
+// Get active user
+const user = await userRepo.getById('user-123');
+if (user) {
+  console.log(user.name);
+}
+
+// Include soft-deleted documents
+const deletedUser = await userRepo.getById('user-123', true);
+if (deletedUser?.deletedAt) {
+  console.log('User was deleted on:', deletedUser.deletedAt);
+}
+```
+
+### update
+
+Update an existing document with partial data. Supports both regular fields and dot notation for nested updates.
+
+```typescript
+async update(id: ID, data: Partial<T>): Promise<T & {id: ID}>
+```
+
+<ParamField path="id" type="string" required>
+  Document ID to update
+</ParamField>
+
+<ParamField path="data" type="Partial<T>" required>
+  Partial document data (supports dot notation like 'address.city')
+</ParamField>
+
+<ResponseField name="return" type="T & {id: ID}">
+  Updated document
+</ResponseField>
+
+**Throws:** `NotFoundError` if document doesn't exist, `ValidationError` if validation fails
+
+```typescript
+// Regular update
+await userRepo.update('user-123', {
+  email: 'newemail@example.com'
+});
+
+// Dot notation for nested fields
+await userRepo.update('user-123', {
+  'address.city': 'Los Angeles',
+  'address.zipCode': '90001',
+  name: 'John Doe'
+});
+
+// Deep nesting
+await repo.update('doc-123', {
+  'settings.notifications.email': true,
+  'settings.theme': 'dark'
+});
+```
+
+### bulkUpdate
+
+Update multiple documents in a single batched operation. Supports dot notation for nested field updates.
+
+```typescript
+async bulkUpdate(updates: { id: ID, data: Partial<T> }[]): Promise<(T & { id: ID })[]>
+```
+
+<ParamField path="updates" type="{ id: ID, data: Partial<T> }[]" required>
+  Array of update operations with ID and data
+</ParamField>
+
+<ResponseField name="return" type="(T & { id: ID })[]">
+  Array of updated documents
+</ResponseField>
+
+**Throws:** `NotFoundError` if any document doesn't exist, `ValidationError` if any validation fails
+
+```typescript
+// Regular bulk update
+await userRepo.bulkUpdate([
+  { id: 'user-1', data: { status: 'active' } },
+  { id: 'user-2', data: { status: 'active' } }
+]);
+
+// With dot notation
+await userRepo.bulkUpdate([
+  { id: 'user-1', data: { 'profile.verified': true } },
+  { id: 'user-2', data: { 'settings.theme': 'dark' } }
+]);
+```
+
+### upsert
+
+Create a new document if it doesn't exist, or update it if it does. Uses the provided ID instead of auto-generating one.
+
+```typescript
+async upsert(id: ID, data: T): Promise<T & { id: ID }>
+```
+
+<ParamField path="id" type="string" required>
+  Document ID to upsert
+</ParamField>
+
+<ParamField path="data" type="T" required>
+  Full document data
+</ParamField>
+
+<ResponseField name="return" type="T & { id: ID }">
+  Created or updated document
+</ResponseField>
+
+**Throws:** `ValidationError` if validation fails
+
+```typescript
+// Sync external data
+await userRepo.upsert('external-id-123', {
+  name: 'John Doe',
+  email: 'john@example.com',
+  source: 'external-api'
+});
+
+// Idempotent operations
+await settingsRepo.upsert('app-config', {
+  theme: 'dark',
+  notifications: true
+});
+```
+
+### delete
+
+Permanently delete a document from Firestore. This is a hard delete - the document cannot be recovered.
+
+```typescript
+async delete(id: ID): Promise<void>
+```
+
+<ParamField path="id" type="string" required>
+  Document ID to delete
+</ParamField>
+
+**Throws:** `NotFoundError` if document doesn't exist
+
+```typescript
+// Delete a user permanently
+await userRepo.delete('user-123');
+
+// Delete with error handling
+try {
+  await userRepo.delete('user-123');
+  console.log('User deleted successfully');
+} catch (error) {
+  if (error instanceof NotFoundError) {
+    console.log('User not found');
+  }
+}
+```
+
+### bulkDelete
+
+Permanently delete multiple documents in a batched operation. This is a hard delete - documents cannot be recovered.
+
+```typescript
+async bulkDelete(ids: ID[]): Promise<number>
+```
+
+<ParamField path="ids" type="string[]" required>
+  Array of document IDs to delete
+</ParamField>
+
+<ResponseField name="return" type="number">
+  Number of documents actually deleted
+</ResponseField>
+
+```typescript
+// Delete multiple users
+const deletedCount = await userRepo.bulkDelete([
+  'user-1',
+  'user-2',
+  'user-3'
+]);
+console.log(`Deleted ${deletedCount} users`);
+
+// Clean up test data
+const testUserIds = await userRepo.query()
+  .where('email', 'array-contains', '@test.com')
+  .get()
+  .then(users => users.map(u => u.id));
+await userRepo.bulkDelete(testUserIds);
+```
+
+## Soft Delete Operations
+
+### softDelete
+
+Soft delete a document by setting its deletedAt timestamp. Document remains in Firestore but is excluded from queries by default.
+
+```typescript
+async softDelete(id: ID): Promise<void>
+```
+
+<ParamField path="id" type="string" required>
+  Document ID to soft delete
+</ParamField>
+
+**Throws:** `NotFoundError` if document doesn't exist
+
+```typescript
+// Soft delete a user (can be restored later)
+await userRepo.softDelete('user-123');
+
+// Check if user was deleted
+const user = await userRepo.getById('user-123', true);
+if (user?.deletedAt) {
+  console.log('User deleted at:', user.deletedAt);
+}
+```
+
+### bulkSoftDelete
+
+Soft delete multiple documents in a batched operation. Documents remain in Firestore but are excluded from queries by default.
+
+```typescript
+async bulkSoftDelete(ids: ID[]): Promise<number>
+```
+
+<ParamField path="ids" type="string[]" required>
+  Array of document IDs to soft delete
+</ParamField>
+
+<ResponseField name="return" type="number">
+  Number of documents actually soft deleted
+</ResponseField>
+
+```typescript
+// Soft delete inactive users
+const inactiveIds = await userRepo.query()
+  .where('lastLogin', '<', oneYearAgo)
+  .get()
+  .then(users => users.map(u => u.id));
+await userRepo.bulkSoftDelete(inactiveIds);
+
+// Archive old orders
+const oldOrderIds = ['order-1', 'order-2', 'order-3'];
+const archivedCount = await orderRepo.bulkSoftDelete(oldOrderIds);
+console.log(`Archived ${archivedCount} orders`);
+```
+
+### purgeDelete
+
+Permanently delete all soft-deleted documents. Use this to clean up documents that were previously soft deleted.
+
+```typescript
+async purgeDelete(): Promise<number>
+```
+
+<ResponseField name="return" type="number">
+  Number of documents permanently deleted
+</ResponseField>
+
+```typescript
+// Clean up all soft-deleted users
+const purgedCount = await userRepo.purgeDelete();
+console.log(`Permanently deleted ${purgedCount} users`);
+
+// Scheduled cleanup job
+cron.schedule('0 0 * * 0', async () => {
+  const deleted = await userRepo.purgeDelete();
+  console.log(`Weekly cleanup: ${deleted} users purged`);
+});
+```
+
+### restore
+
+Restore a soft-deleted document by removing its deletedAt timestamp. Document becomes accessible in normal queries again.
+
+```typescript
+async restore(id: ID): Promise<void>
+```
+
+<ParamField path="id" type="string" required>
+  Document ID to restore
+</ParamField>
+
+**Throws:** `NotFoundError` if document doesn't exist
+
+```typescript
+// Restore a deleted user
+await userRepo.restore('user-123');
+
+// Restore with verification
+const user = await userRepo.getById('user-123', true);
+if (user?.deletedAt) {
+  await userRepo.restore(user.id);
+  console.log('User restored successfully');
+}
+```
+
+### restoreAll
+
+Restore all soft-deleted documents in the collection. Useful for bulk recovery operations.
+
+```typescript
+async restoreAll(): Promise<number>
+```
+
+<ResponseField name="return" type="number">
+  Number of documents restored
+</ResponseField>
+
+```typescript
+// Restore all deleted users
+const restoredCount = await userRepo.restoreAll();
+console.log(`Restored ${restoredCount} users`);
+
+// Undo accidental bulk delete
+await orderRepo.restoreAll();
+```
+
+## Query Methods
+
+### findByField
+
+Find documents by a specific field value. Simple equality search on a single field.
+
+```typescript
+async findByField<K extends keyof T>(field: K, value: T[K]): Promise<(T & { id: ID})[]>
+```
+
+<ParamField path="field" type="keyof T" required>
+  The field name to search on
+</ParamField>
+
+<ParamField path="value" type="T[K]" required>
+  The value to match
+</ParamField>
+
+<ResponseField name="return" type="(T & { id: ID })[]">
+  Array of matching documents
+</ResponseField>
+
+```typescript
+// Find users by email
+const users = await userRepo.findByField('email', 'john@example.com');
+
+// Find orders by status
+const pendingOrders = await orderRepo.findByField('status', 'pending');
+```
+
+### list
+
+List documents with simple pagination. Uses cursor-based pagination for efficient large dataset traversal.
+
+```typescript
+async list(limit = 10, startAfterId?: string, includeDeleted = false): Promise<(T & { id: ID})[]>
+```
+
+<ParamField path="limit" type="number" default="10">
+  Maximum number of documents to return
+</ParamField>
+
+<ParamField path="startAfterId" type="string">
+  Document ID to start after (for next page)
+</ParamField>
+
+<ParamField path="includeDeleted" type="boolean" default="false">
+  If true, include soft-deleted documents
+</ParamField>
+
+<ResponseField name="return" type="(T & { id: ID })[]">
+  Array of documents
+</ResponseField>
+
+```typescript
+// First page
+const firstPage = await userRepo.list(20);
+
+// Next page (use paginate from query for efficient pagination)
+const lastId = firstPage[firstPage.length - 1]?.id;
+const nextPage = await userRepo.list(20, lastId);
+
+// Include deleted documents
+const allUsers = await userRepo.list(50, undefined, true);
+```
+
+### query
+
+Create a query builder for complex queries. Provides a fluent API for filtering, sorting, pagination, and more.
+
+```typescript
+query(): FirestoreQueryBuilder<T>
+```
+
+<ResponseField name="return" type="FirestoreQueryBuilder<T>">
+  Query builder instance
+</ResponseField>
+
+```typescript
+// Simple query
+const activeUsers = await userRepo.query()
+  .where('status', '==', 'active')
+  .get();
+
+// Complex query with multiple conditions
+const results = await orderRepo.query()
+  .where('status', '==', 'pending')
+  .where('total', '>', 100)
+  .orderBy('createdAt', 'desc')
+  .limit(50)
+  .get();
+
+// Pagination
+const page = await productRepo.query()
+  .where('category', '==', 'electronics')
+  .orderBy('price', 'desc')
+  .paginate(20, lastCursorId);
+```
+
+## Transaction Methods
+
+### runInTransaction
+
+Execute a function within a Firestore transaction. Ensures atomic operations with automatic rollback on failure.
+
+```typescript
+async runInTransaction<R>(
+  fn: (
+    tx: FirebaseFirestore.Transaction,
+    repo: FirestoreRepository<T>
+  ) => Promise<R>
+): Promise<R>
+```
+
+<ParamField path="fn" type="(tx, repo) => Promise<R>" required>
+  Transaction function that receives transaction and repository
+</ParamField>
+
+<ResponseField name="return" type="R">
+  Result of the transaction function
+</ResponseField>
+
+```typescript
+// Transfer balance between accounts
+await accountRepo.runInTransaction(async (tx, repo) => {
+  const from = await repo.getForUpdate(tx, 'account-1');
+  const to = await repo.getForUpdate(tx, 'account-2');
+
+  if (!from || from.balance < 100) {
+    throw new Error('Insufficient funds');
+  }
+
+  await repo.updateInTransaction(tx, from.id, {
+    balance: from.balance - 100
+  });
+  await repo.updateInTransaction(tx, to.id, {
+    balance: to.balance + 100
+  });
+});
+
+// Atomic counter increment
+const newCount = await counterRepo.runInTransaction(async (tx, repo) => {
+  const counter = await repo.getForUpdate(tx, 'global-counter');
+  const newValue = (counter?.value || 0) + 1;
+  await repo.updateInTransaction(tx, 'global-counter', {
+    value: newValue
+  });
+  return newValue;
+});
+```
+
+### getForUpdate
+
+Get a document within a transaction for update. Ensures you read the latest version before updating.
+
+```typescript
+async getForUpdate(
+  tx: FirebaseFirestore.Transaction,
+  id: ID,
+  includeDeleted = false
+): Promise<(T & { id: ID }) | null>
+```
+
+<ParamField path="tx" type="FirebaseFirestore.Transaction" required>
+  Firestore transaction object
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  Document ID
+</ParamField>
+
+<ParamField path="includeDeleted" type="boolean" default="false">
+  If true, include soft-deleted documents
+</ParamField>
+
+<ResponseField name="return" type="(T & { id: ID }) | null">
+  Document or null if not found
+</ResponseField>
+
+```typescript
+await repo.runInTransaction(async (tx, repo) => {
+  const user = await repo.getForUpdate(tx, 'user-123');
+  if (user) {
+    await repo.updateInTransaction(tx, user.id, {
+      loginCount: (user.loginCount || 0) + 1
+    });
+  }
+});
+```
+
+### updateInTransaction
+
+Update a document within a transaction. Supports dot notation for nested field updates. IMPORTANT: Call getForUpdate() first to read the document before updating.
+
+```typescript
+async updateInTransaction(
+  tx: FirebaseFirestore.Transaction,
+  id: ID,
+  data: Partial<T>,
+  existingData?: T & { id: ID }
+): Promise<void>
+```
+
+<ParamField path="tx" type="FirebaseFirestore.Transaction" required>
+  Firestore transaction object
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  Document ID
+</ParamField>
+
+<ParamField path="data" type="Partial<T>" required>
+  Partial data to update (supports dot notation)
+</ParamField>
+
+<ParamField path="existingData" type="T & { id: ID }">
+  Optional: pass existing data from getForUpdate to avoid extra read
+</ParamField>
+
+**Throws:** `ValidationError` if validation fails
+
+```typescript
+await repo.runInTransaction(async (tx, repo) => {
+  const product = await repo.getForUpdate(tx, 'product-123');
+  await repo.updateInTransaction(tx, 'product-123', {
+    stock: product.stock - quantity
+  }, product);
+});
+
+// With dot notation in transaction
+await repo.runInTransaction(async (tx, repo) => {
+  const user = await repo.getForUpdate(tx, 'user-123');
+  await repo.updateInTransaction(tx, 'user-123', {
+    'settings.notifications': true,
+    'profile.lastLogin': new Date()
+  }, user);
+});
+```
+
+### createInTransaction
+
+Create a document within a transaction. Must be used inside runInTransaction callback.
+
+```typescript
+async createInTransaction(
+  tx: FirebaseFirestore.Transaction,
+  data: T
+): Promise<T & { id: ID }>
+```
+
+<ParamField path="tx" type="FirebaseFirestore.Transaction" required>
+  Firestore transaction object
+</ParamField>
+
+<ParamField path="data" type="T" required>
+  Document data
+</ParamField>
+
+<ResponseField name="return" type="T & { id: ID }">
+  Created document with ID
+</ResponseField>
+
+**Throws:** `ValidationError` if validation fails
+
+```typescript
+await repo.runInTransaction(async (tx, repo) => {
+  const newOrder = await repo.createInTransaction(tx, {
+    userId: 'user-123',
+    total: 99.99,
+    status: 'pending'
+  });
+  console.log('Order created:', newOrder.id);
+});
+```
+
+### deleteInTransaction
+
+Delete a document within a transaction. Must be used inside runInTransaction callback.
+
+```typescript
+async deleteInTransaction(
+  tx: FirebaseFirestore.Transaction,
+  id: ID
+): Promise<void>
+```
+
+<ParamField path="tx" type="FirebaseFirestore.Transaction" required>
+  Firestore transaction object
+</ParamField>
+
+<ParamField path="id" type="string" required>
+  Document ID
+</ParamField>
+
+**Throws:** `NotFoundError` if document doesn't exist
+
+```typescript
+await repo.runInTransaction(async (tx, repo) => {
+  const item = await repo.getForUpdate(tx, 'item-123');
+  if (item && item.quantity === 0) {
+    await repo.deleteInTransaction(tx, item.id);
+  }
+});
+```

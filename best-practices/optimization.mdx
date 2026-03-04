@@ -1,0 +1,493 @@
+---
+title: Query & Repository Optimization
+description: Best practices for optimizing FirestoreORM queries and repository patterns for maximum performance and maintainability
+---
+
+## Repository Initialization
+
+### Initialize Repositories Once
+
+Create repository instances once and reuse them throughout your application. Don't create new instances in every function.
+
+<CodeGroup>
+```typescript Good Practice
+// repositories/index.ts
+import { FirestoreRepository } from '@spacelabstech/firestoreorm';
+import { db } from '../config/firebase';
+import { userSchema, User } from '../schemas';
+
+// ✅ Single instance, reused everywhere
+export const userRepo = FirestoreRepository.withSchema<User>(
+  db,
+  'users',
+  userSchema
+);
+```
+
+```typescript Bad Practice
+// ❌ Creates new instance every time
+export function getUserRepository() {
+  return FirestoreRepository.withSchema<User>(db, 'users', userSchema);
+}
+```
+</CodeGroup>
+
+<Note>
+**Why this matters:** Repository initialization is lightweight, but creating instances repeatedly is unnecessary and makes hook management inconsistent. Hooks registered on different instances won't share state or behavior.
+</Note>
+
+### Centralized Repository Module
+
+Organize all repositories in a single module for consistent configuration and hook setup.
+
+```typescript repositories/index.ts
+import { db } from '../config/firebase';
+import { FirestoreRepository } from '@spacelabstech/firestoreorm';
+import * as schemas from '../schemas';
+
+// Initialize all repositories
+export const userRepo = FirestoreRepository.withSchema<schemas.User>(
+  db,
+  'users',
+  schemas.userSchema
+);
+
+export const orderRepo = FirestoreRepository.withSchema<schemas.Order>(
+  db,
+  'orders',
+  schemas.orderSchema
+);
+
+export const productRepo = FirestoreRepository.withSchema<schemas.Product>(
+  db,
+  'products',
+  schemas.productSchema
+);
+
+// Setup common hooks in one place
+userRepo.on('afterCreate', async (user) => {
+  await auditLog.record('user_created', user);
+});
+
+orderRepo.on('afterCreate', async (order) => {
+  await notificationService.sendOrderConfirmation(order);
+});
+```
+
+<Tip>
+This pattern makes it easy to see all your data access patterns in one place and ensures consistent hook behavior across your application.
+</Tip>
+
+## Query Optimization
+
+### Use Cursor-Based Pagination
+
+For large datasets, cursor-based pagination is significantly more efficient than offset pagination.
+
+<CodeGroup>
+```typescript Cursor-Based (Recommended)
+// ✅ Scales well - jumps directly to position
+const { items, nextCursorId } = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .paginate(20, lastCursorId);
+
+// Next page
+const nextPage = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .paginate(20, nextCursorId);
+```
+
+```typescript Offset-Based (Avoid for Large Datasets)
+// ❌ Expensive for large page numbers - scans and skips documents
+const result = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .offsetPaginate(100, 20); // Skip 1980 docs to get page 100
+```
+</CodeGroup>
+
+<Warning>
+**Performance Impact:** Offset pagination requires Firestore to scan and skip all documents before your offset. For page 100 with 20 items per page, Firestore reads and discards 1,980 documents before returning your results. You're charged for all those reads.
+</Warning>
+
+### Query Updates for Bulk Operations
+
+When updating multiple documents based on a condition, use `query().update()` instead of fetching then updating.
+
+<CodeGroup>
+```typescript Efficient Approach
+// ✅ Single query, batched writes
+await orderRepo.query()
+  .where('status', '==', 'pending')
+  .where('createdAt', '<', cutoffDate)
+  .update({ status: 'expired' });
+```
+
+```typescript Inefficient Approach
+// ❌ Two operations: fetch all + update all
+const orders = await orderRepo.query()
+  .where('status', '==', 'pending')
+  .where('createdAt', '<', cutoffDate)
+  .get();
+
+await orderRepo.bulkUpdate(
+  orders.map(o => ({ id: o.id, data: { status: 'expired' } }))
+);
+```
+</CodeGroup>
+
+<Info>
+The efficient approach reads documents once and updates them in batches. The inefficient approach reads all documents, transfers them to your application, then sends them back for updates - doubling network traffic and operation time.
+</Info>
+
+### Limit Query Results
+
+Always add reasonable limits to prevent accidentally reading thousands of documents.
+
+```typescript
+// Always specify limits for unbounded queries
+const recentUsers = await userRepo.query()
+  .where('status', '==', 'active')
+  .orderBy('createdAt', 'desc')
+  .limit(100) // Prevent reading entire collection
+  .get();
+
+// For counts, use the count() method
+const totalActive = await userRepo.query()
+  .where('status', '==', 'active')
+  .count(); // More efficient than fetching all documents
+```
+
+### Use count() for Quantity Checks
+
+<CodeGroup>
+```typescript Efficient
+// ✅ Aggregation query - charges per 1000 docs
+const total = await userRepo.query()
+  .where('status', '==', 'active')
+  .count();
+```
+
+```typescript Expensive
+// ❌ Fetches all documents - charges per doc
+const users = await userRepo.query()
+  .where('status', '==', 'active')
+  .get();
+const total = users.length;
+```
+</CodeGroup>
+
+<Note>
+Firestore's `count()` aggregation is significantly cheaper than fetching documents. It charges 1 read per 1,000 documents counted, versus 1 read per document when fetching.
+</Note>
+
+### Use exists() for Presence Checks
+
+<CodeGroup>
+```typescript Efficient
+// ✅ Reads at most 1 document
+const hasOrders = await orderRepo.query()
+  .where('userId', '==', userId)
+  .exists();
+```
+
+```typescript Expensive
+// ❌ Reads all matching documents
+const orders = await orderRepo.query()
+  .where('userId', '==', userId)
+  .get();
+const hasOrders = orders.length > 0;
+```
+</CodeGroup>
+
+### Select Specific Fields
+
+When you only need certain fields, use `select()` to reduce bandwidth.
+
+```typescript
+// Reduces network transfer (still charges for full document read)
+const emails = await userRepo.query()
+  .where('subscribed', '==', true)
+  .select('email', 'name')
+  .get();
+
+// Returns: [{ email: '...', name: '...' }, ...]
+// Instead of full user objects with all fields
+```
+
+<Info>
+**Billing Note:** You're still charged for reading the full document, but `select()` reduces network bandwidth and deserialization time, which can improve performance in bandwidth-constrained environments.
+</Info>
+
+## Streaming for Large Datasets
+
+When processing large datasets (exports, migrations, batch jobs), use streaming to avoid memory issues.
+
+<CodeGroup>
+```typescript Memory Efficient
+// ✅ Processes one document at a time
+const csvStream = createWriteStream('users.csv');
+csvStream.write('name,email,status\n');
+
+for await (const user of userRepo.query().stream()) {
+  csvStream.write(`${user.name},${user.email},${user.status}\n`);
+}
+
+csvStream.end();
+```
+
+```typescript Memory Intensive
+// ❌ Loads all documents into memory at once
+const allUsers = await userRepo.query().get(); // Could be 100,000+ docs
+
+const csvStream = createWriteStream('users.csv');
+csvStream.write('name,email,status\n');
+
+for (const user of allUsers) {
+  csvStream.write(`${user.name},${user.email},${user.status}\n`);
+}
+
+csvStream.end();
+```
+</CodeGroup>
+
+<Warning>
+**Performance Cost:** Streaming still reads all matching documents, so you're charged for every document read. Use with appropriate filters and limits. The benefit is memory efficiency, not reduced billing.
+</Warning>
+
+## Real-Time Listeners
+
+### Be Cautious with Subscriptions
+
+Real-time listeners charge you for every document that matches your query, plus additional reads when documents change.
+
+```typescript
+// Use narrow filters to minimize initial load
+const unsubscribe = await orderRepo.query()
+  .where('userId', '==', userId)        // Specific to user
+  .where('status', '==', 'active')      // Further narrowed
+  .limit(50)                            // Capped at 50 docs
+  .onSnapshot(
+    (orders) => {
+      console.log(`Active orders: ${orders.length}`);
+      updateDashboard(orders);
+    },
+    (error) => {
+      console.error('Snapshot error:', error);
+    }
+  );
+
+// Clean up when done
+window.addEventListener('beforeunload', () => unsubscribe());
+```
+
+<Warning>
+**Cost Impact:** 
+- Initial load: 1 read per matching document
+- Each change: 1 read for the changed document
+- For 1,000 matching documents with 100 updates/hour, that's 1,000 + (100 × 24) = 3,400 reads/day
+
+Consider polling for less critical real-time data.
+</Warning>
+
+## Composite Index Management
+
+### Handle Index Errors Gracefully
+
+Firestore requires composite indexes for certain query combinations. The ORM provides clear error messages.
+
+```typescript
+import { FirestoreIndexError } from '@spacelabstech/firestoreorm';
+
+try {
+  const results = await orderRepo.query()
+    .where('status', '==', 'pending')
+    .where('total', '>', 100)
+    .orderBy('createdAt', 'desc')
+    .get();
+} catch (error) {
+  if (error instanceof FirestoreIndexError) {
+    console.log(error.toString());
+    // Logs formatted message with link to create index
+    // Example: "Missing composite index for collection 'orders'.
+    //           Fields: status (==), total (>), createdAt (desc)
+    //           Create index: https://console.firebase.google.com/..."
+    
+    // In development, click link and wait 1-2 minutes
+    // In production, create indexes during deployment
+  }
+  throw error;
+}
+```
+
+<Tip>
+**Development Workflow:**
+1. Run your query and catch the `FirestoreIndexError`
+2. Click the URL in the error message
+3. Firestore Console opens with index pre-configured
+4. Click "Create Index"
+5. Wait 1-2 minutes for index to build
+6. Retry your query
+</Tip>
+
+## Handling Firestore Query Limitations
+
+### Work Around "in" Query Limits
+
+Firestore limits `in` and `array-contains-any` queries to 10 items.
+
+```typescript
+// Helper function to chunk arrays
+function chunkArray<T>(array: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < array.length; i += size) {
+    chunks.push(array.slice(i, i + size));
+  }
+  return chunks;
+}
+
+// Query in chunks
+const userIds = [...Array(25)].map((_, i) => `user-${i}`); // 25 IDs
+const chunks = chunkArray(userIds, 10);
+const allResults: User[] = [];
+
+for (const chunk of chunks) {
+  const users = await userRepo.query()
+    .where('id', 'in', chunk)
+    .get();
+  allResults.push(...users);
+}
+
+console.log(`Found ${allResults.length} users`);
+```
+
+## Data Lifecycle Best Practices
+
+### Always Add Timestamps
+
+Track data lifecycle with consistent timestamps.
+
+```typescript
+const userSchema = z.object({
+  id: z.string().optional(),
+  name: z.string(),
+  email: z.string().email(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+
+// On create
+await userRepo.create({
+  ...data,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString()
+});
+
+// On update - always update the timestamp
+await userRepo.update(id, {
+  ...data,
+  updatedAt: new Date().toISOString()
+});
+```
+
+<Tip>
+Consistent timestamps enable:
+- Sorting by creation/modification date
+- Auditing and debugging
+- Data retention policies
+- Analytics and reporting
+</Tip>
+
+### Leverage Soft Deletes
+
+Use soft deletes by default unless you have a specific reason to permanently delete data.
+
+```typescript
+// ✅ Default behavior - recoverable
+await userRepo.softDelete(userId);
+
+// Later, if needed
+await userRepo.restore(userId);
+
+// Query soft-deleted documents
+const deleted = await userRepo.query()
+  .onlyDeleted()
+  .get();
+
+// Permanently delete when absolutely necessary
+await userRepo.delete(userId); // Cannot be undone
+
+// Purge all soft-deleted documents older than 90 days
+const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+const oldDeleted = await userRepo.query()
+  .onlyDeleted()
+  .where('deletedAt', '<', ninetyDaysAgo)
+  .get();
+
+for (const user of oldDeleted) {
+  await userRepo.delete(user.id); // Hard delete
+}
+```
+
+<Info>
+**Benefits of Soft Deletes:**
+- Recover accidentally deleted data
+- Maintain referential integrity during cleanup
+- Audit deletion history
+- Comply with data retention policies
+- Undo user mistakes
+</Info>
+
+## Hook Organization
+
+### Structure Hooks for Reusability
+
+Keep hooks focused and modular. Avoid putting complex business logic directly in hooks.
+
+<CodeGroup>
+```typescript Good Practice
+// ✅ Focused, testable service
+class UserNotificationService {
+  async sendWelcomeEmail(user: User) {
+    const template = await this.getTemplate('welcome');
+    await this.emailService.send({
+      to: user.email,
+      subject: template.subject,
+      body: template.body.replace('{{name}}', user.name)
+    });
+  }
+}
+
+const notificationService = new UserNotificationService();
+
+// Hook delegates to service
+userRepo.on('afterCreate', async (user) => {
+  await notificationService.sendWelcomeEmail(user);
+});
+```
+
+```typescript Bad Practice
+// ❌ Business logic coupled to hook - hard to test and reuse
+userRepo.on('afterCreate', async (user) => {
+  const template = await db.collection('templates').doc('welcome').get();
+  const emailService = new EmailService(config);
+  await emailService.send({
+    to: user.email,
+    subject: template.data().subject,
+    body: template.data().body.replace('{{name}}', user.name)
+  });
+  await db.collection('email_logs').add({ 
+    userId: user.id, 
+    type: 'welcome',
+    sentAt: new Date().toISOString()
+  });
+});
+```
+</CodeGroup>
+
+<Note>
+Separating business logic from hooks makes your code:
+- **Testable**: Services can be unit tested independently
+- **Reusable**: Same service can be called from hooks, API routes, or scheduled jobs
+- **Maintainable**: Changes to business logic don't require modifying hook registrations
+- **Clear**: Hook registration shows what happens without implementation details
+</Note>

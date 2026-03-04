@@ -1,0 +1,449 @@
+---
+title: 'CRUD Operations'
+description: 'Learn how to create, read, update, and delete documents using FirestoreORM'
+icon: 'database'
+---
+
+FirestoreORM provides a clean, type-safe API for all basic database operations. This guide covers creating, reading, updating, and deleting documents with practical examples.
+
+## Creating Documents
+
+### Basic Create
+
+Use the `create()` method to add new documents to your collection. The ORM automatically generates an ID and adds soft delete support.
+
+```typescript
+const user = await userRepo.create({
+  name: 'John Doe',
+  email: 'john@example.com',
+  age: 30,
+  status: 'active',
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString()
+});
+
+console.log(user.id); // Auto-generated ID: 'Xyz123AbC'
+```
+
+<Info>
+The `id` field is automatically added to the returned document. You don't need to generate it yourself.
+</Info>
+
+### Create with Validation
+
+When using a Zod schema, validation happens automatically before the document is created.
+
+```typescript
+import { z } from 'zod';
+import { FirestoreRepository, ValidationError } from '@spacelabstech/firestoreorm';
+
+const userSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+  email: z.string().email('Invalid email address'),
+  age: z.number().int().positive().optional(),
+  status: z.enum(['active', 'inactive', 'suspended']).default('active')
+});
+
+const userRepo = FirestoreRepository.withSchema<User>(
+  db,
+  'users',
+  userSchema
+);
+
+try {
+  await userRepo.create({
+    name: '',
+    email: 'not-an-email',
+    age: -5
+  });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.log(error.issues);
+    // [
+    //   { path: ['name'], message: 'Name is required' },
+    //   { path: ['email'], message: 'Invalid email address' },
+    //   { path: ['age'], message: 'Must be positive' }
+    // ]
+  }
+}
+```
+
+### Create with Hooks
+
+Lifecycle hooks allow you to run custom logic before or after creation.
+
+```typescript
+// Send welcome email after user creation
+userRepo.on('afterCreate', async (user) => {
+  await sendWelcomeEmail(user.email);
+  console.log(`Welcome email sent to ${user.email}`);
+});
+
+// Validate business rules before creation
+userRepo.on('beforeCreate', (user) => {
+  if (user.email.endsWith('@competitor.com')) {
+    throw new Error('Cannot create user with competitor email');
+  }
+});
+
+const user = await userRepo.create({
+  name: 'Jane Smith',
+  email: 'jane@example.com'
+});
+// Hooks execute automatically
+```
+
+## Reading Documents
+
+### Get by ID
+
+Retrieve a single document by its unique identifier.
+
+```typescript
+const user = await userRepo.getById('user-123');
+
+if (user) {
+  console.log(user.name);
+} else {
+  console.log('User not found');
+}
+```
+
+<Note>
+By default, soft-deleted documents are excluded. Use `getById(id, true)` to include them.
+</Note>
+
+### Get Deleted Documents
+
+```typescript
+// Include soft-deleted documents
+const deletedUser = await userRepo.getById('user-123', true);
+
+if (deletedUser?.deletedAt) {
+  console.log('User was deleted on:', deletedUser.deletedAt);
+}
+```
+
+### Find by Field
+
+Search for documents by a specific field value.
+
+```typescript
+// Find all users with a specific email
+const users = await userRepo.findByField('email', 'john@example.com');
+
+// Find all orders with status 'pending'
+const pendingOrders = await orderRepo.findByField('status', 'pending');
+```
+
+### List Documents
+
+Retrieve documents with simple pagination.
+
+```typescript
+// Get first 20 users
+const firstPage = await userRepo.list(20);
+
+// Get next 20 users (pass the last ID from previous page)
+const lastId = firstPage[firstPage.length - 1]?.id;
+const nextPage = await userRepo.list(20, lastId);
+
+// Include soft-deleted documents
+const allUsers = await userRepo.list(50, undefined, true);
+```
+
+<Warning>
+For large datasets, use the query builder's pagination methods instead of `list()` for better performance.
+</Warning>
+
+## Updating Documents
+
+### Basic Update
+
+Update specific fields while preserving others.
+
+```typescript
+const updatedUser = await userRepo.update('user-123', {
+  status: 'inactive',
+  updatedAt: new Date().toISOString()
+});
+
+console.log(updatedUser.status); // 'inactive'
+console.log(updatedUser.name); // Original name preserved
+```
+
+### Partial Updates
+
+Only the fields you specify are updated. All other fields remain unchanged.
+
+```typescript
+// Update only email
+await userRepo.update('user-123', {
+  email: 'newemail@example.com'
+});
+
+// Update multiple fields
+await userRepo.update('user-123', {
+  name: 'John Updated',
+  age: 31,
+  updatedAt: new Date().toISOString()
+});
+```
+
+### Update with Validation
+
+Updates are validated using `schema.partial()`, making all fields optional.
+
+```typescript
+try {
+  await userRepo.update('user-123', {
+    email: 'invalid-email',
+    age: -10
+  });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.log(error.issues);
+  }
+}
+```
+
+### Update Hooks
+
+```typescript
+// Log all updates
+userRepo.on('afterUpdate', async (user) => {
+  await auditLog.record('user_updated', {
+    userId: user.id,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Validate before update
+orderRepo.on('beforeUpdate', (data) => {
+  if (data.status === 'shipped' && !data.trackingNumber) {
+    throw new Error('Tracking number required for shipped orders');
+  }
+});
+```
+
+### Upsert (Create or Update)
+
+Create a document if it doesn't exist, or update it if it does.
+
+```typescript
+// Sync external data
+await userRepo.upsert('external-id-123', {
+  name: 'John Doe',
+  email: 'john@example.com',
+  source: 'external-api'
+});
+
+// Idempotent configuration updates
+await settingsRepo.upsert('app-config', {
+  theme: 'dark',
+  notifications: true,
+  language: 'en'
+});
+```
+
+<Info>
+Upsert uses the provided ID instead of auto-generating one. Perfect for syncing data from external sources.
+</Info>
+
+## Deleting Documents
+
+### Soft Delete (Recommended)
+
+Mark documents as deleted without removing them from Firestore.
+
+```typescript
+// Soft delete - document stays in database
+await userRepo.softDelete('user-123');
+
+// Document is excluded from queries by default
+const user = await userRepo.getById('user-123'); // null
+
+// But can be retrieved with includeDeleted flag
+const deletedUser = await userRepo.getById('user-123', true);
+console.log(deletedUser.deletedAt); // '2024-01-15T10:30:00.000Z'
+```
+
+<Steps>
+  <Step title="Soft Delete">
+    Call `softDelete()` to mark the document with a `deletedAt` timestamp.
+  </Step>
+  <Step title="Document Hidden">
+    The document is automatically excluded from all queries.
+  </Step>
+  <Step title="Restore if Needed">
+    You can restore the document later using `restore()`.
+  </Step>
+</Steps>
+
+### Hard Delete (Permanent)
+
+Permanently remove a document from Firestore.
+
+```typescript
+// Hard delete - cannot be recovered
+await userRepo.delete('user-123');
+
+// Document is gone forever
+const user = await userRepo.getById('user-123'); // null
+const deletedUser = await userRepo.getById('user-123', true); // null
+```
+
+<Warning>
+Hard deletes are permanent and cannot be undone. Use soft deletes by default unless you have a specific reason to permanently remove data.
+</Warning>
+
+### Restore Soft-Deleted Documents
+
+Recover documents that were soft deleted.
+
+```typescript
+// Restore a single document
+await userRepo.restore('user-123');
+
+// Document is now accessible in queries again
+const user = await userRepo.getById('user-123');
+console.log(user.deletedAt); // null
+
+// Restore all soft-deleted documents in collection
+const restoredCount = await userRepo.restoreAll();
+console.log(`Restored ${restoredCount} users`);
+```
+
+### Purge Deleted Documents
+
+Permanently delete all soft-deleted documents.
+
+```typescript
+// Clean up all soft-deleted users
+const purgedCount = await userRepo.purgeDelete();
+console.log(`Permanently deleted ${purgedCount} users`);
+```
+
+### Delete Hooks
+
+```typescript
+// Clean up related data after deletion
+userRepo.on('afterDelete', async (user) => {
+  // Delete user's orders
+  await orderRepo.query()
+    .where('userId', '==', user.id)
+    .delete();
+  
+  // Delete user's profile image
+  await storage.delete(`profiles/${user.id}.jpg`);
+});
+
+// Log soft deletes
+userRepo.on('afterSoftDelete', async (data) => {
+  await auditLog.record('user_soft_deleted', {
+    userId: data.id,
+    deletedAt: data.deletedAt
+  });
+});
+```
+
+## Error Handling
+
+All CRUD operations can throw specific errors that you should handle.
+
+```typescript
+import { 
+  NotFoundError, 
+  ValidationError,
+  ConflictError 
+} from '@spacelabstech/firestoreorm';
+
+try {
+  await userRepo.update('user-123', { email: 'invalid' });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    // Handle validation errors
+    console.log('Validation failed:', error.issues);
+  } else if (error instanceof NotFoundError) {
+    // Handle not found
+    console.log('User not found');
+  } else {
+    // Handle other errors
+    console.error('Unexpected error:', error);
+  }
+}
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Always Add Timestamps">
+    Include `createdAt` and `updatedAt` fields in your schema and update them consistently.
+    
+    ```typescript
+    await userRepo.create({
+      ...data,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    
+    await userRepo.update(id, {
+      ...data,
+      updatedAt: new Date().toISOString()
+    });
+    ```
+  </Step>
+  
+  <Step title="Use Soft Deletes">
+    Default to soft deletes to maintain data integrity and enable recovery.
+    
+    ```typescript
+    // ✅ Good - recoverable
+    await userRepo.softDelete(userId);
+    
+    // ❌ Use sparingly - permanent
+    await userRepo.delete(userId);
+    ```
+  </Step>
+  
+  <Step title="Validate with Zod Schemas">
+    Always use schema validation to catch errors before they reach Firestore.
+    
+    ```typescript
+    const userRepo = FirestoreRepository.withSchema<User>(
+      db,
+      'users',
+      userSchema
+    );
+    ```
+  </Step>
+  
+  <Step title="Check Existence Before Update">
+    The `update()` method throws `NotFoundError` if the document doesn't exist.
+    
+    ```typescript
+    const user = await userRepo.getById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+    await userRepo.update(userId, data);
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Bulk Operations" icon="layer-group" href="/guides/bulk-operations">
+    Learn how to efficiently create, update, and delete multiple documents at once
+  </Card>
+  <Card title="Queries" icon="magnifying-glass" href="/guides/queries">
+    Build complex queries with filtering, sorting, and aggregations
+  </Card>
+  <Card title="Transactions" icon="lock" href="/guides/transactions">
+    Ensure data consistency with atomic operations
+  </Card>
+  <Card title="Dot Notation" icon="circle-dot" href="/guides/dot-notation">
+    Update nested fields without replacing entire objects
+  </Card>
+</CardGroup>

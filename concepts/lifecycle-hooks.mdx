@@ -1,0 +1,804 @@
+---
+title: Lifecycle Hooks
+description: Execute custom logic before and after database operations with FirestoreORM's lifecycle hook system
+---
+
+## What are Lifecycle Hooks?
+
+Lifecycle hooks let you run custom code at specific points in a repository operation's lifecycle. You can add logging, send notifications, validate business rules, update related data, or trigger any side effect before or after database operations.
+
+Think of hooks as middleware for your database operations - they intercept the flow of execution and let you inject custom behavior without modifying the core operation logic.
+
+## Why Use Hooks?
+
+Hooks provide a clean separation between:
+- **Core data operations**: Creating, reading, updating, deleting
+- **Side effects**: Logging, notifications, analytics, cache invalidation
+
+Benefits:
+- **Centralized logic**: Define side effects once, apply automatically to all operations
+- **Maintainability**: Easy to add/remove behaviors without touching business logic
+- **Testability**: Mock or disable hooks during testing
+- **Consistency**: Ensure certain actions always happen (e.g., audit logging)
+
+## Available Hooks
+
+### Single Document Hooks
+
+From `src/core/FirestoreRepository.ts:16-21`:
+
+```typescript
+type SingleHookEvent = 
+  | 'beforeCreate' | 'afterCreate'
+  | 'beforeSoftDelete' | 'afterSoftDelete'
+  | 'beforeUpdate' | 'afterUpdate'
+  | 'beforeDelete' | 'afterDelete'
+  | 'beforeRestore' | 'afterRestore';
+```
+
+- `beforeCreate` / `afterCreate`: Creating a single document
+- `beforeUpdate` / `afterUpdate`: Updating a single document
+- `beforeDelete` / `afterDelete`: Hard deleting a document
+- `beforeSoftDelete` / `afterSoftDelete`: Soft deleting a document
+- `beforeRestore` / `afterRestore`: Restoring a soft-deleted document
+
+### Bulk Operation Hooks
+
+From `src/core/FirestoreRepository.ts:23-28`:
+
+```typescript
+type BulkHookEvent = 
+  | 'beforeBulkCreate' | 'afterBulkCreate'
+  | 'beforeBulkUpdate' | 'afterBulkUpdate'
+  | 'beforeBulkDelete' | 'afterBulkDelete'
+  | 'beforeBulkSoftDelete' | 'afterBulkSoftDelete'
+  | 'beforeBulkRestore' | 'afterBulkRestore';
+```
+
+- `beforeBulkCreate` / `afterBulkCreate`: Creating multiple documents
+- `beforeBulkUpdate` / `afterBulkUpdate`: Updating multiple documents
+- `beforeBulkDelete` / `afterBulkDelete`: Hard deleting multiple documents
+- `beforeBulkSoftDelete` / `afterBulkSoftDelete`: Soft deleting multiple documents
+- `beforeBulkRestore` / `afterBulkRestore`: Restoring multiple documents
+
+## How Hooks Work Internally
+
+### Hook Registration
+
+From `src/core/FirestoreRepository.ts:261-270`:
+
+```typescript
+on(event: HookEvent, fn: AnyHookFn<T>): void {
+  if(!this.hooks[event]) this.hooks[event] = [];
+  this.hooks[event]!.push(fn);
+}
+```
+
+Hooks are stored in an array per event type. Multiple hooks can be registered for the same event, and they execute in registration order.
+
+### Hook Execution
+
+From `src/core/FirestoreRepository.ts:272-275`:
+
+```typescript
+private async runHooks(event: HookEvent, data: any) {
+  const fns = this.hooks[event] || [];
+  for(const fn of fns) await fn(data);
+}
+```
+
+Hooks run sequentially. Each hook must complete before the next one starts. If a hook throws an error, the operation fails and subsequent hooks don't run.
+
+### Hook Integration in Operations
+
+Let's see how hooks integrate into a create operation, from `src/core/FirestoreRepository.ts:307-325`:
+
+```typescript
+async create(data: T): Promise<T & { id: ID }> {
+  try{
+    const validData = this.validator ? this.validator.parseCreate(data) : data;
+    const docToCreate = { ...validData, deletedAt: null };
+
+    await this.runHooks('beforeCreate', docToCreate); // Before hook
+
+    const docRef = await this.col().add(docToCreate as any);
+    const created = { ...docToCreate, id: docRef.id };
+
+    await this.runHooks('afterCreate', created); // After hook
+    return created;
+  }catch(err: any){
+    if(err instanceof z.ZodError){
+      throw new ValidationError(err.issues);
+    }
+    throw parseFirestoreError(err);
+  }
+}
+```
+
+The flow:
+1. Validate data (line 309)
+2. Run `beforeCreate` hooks (line 312)
+3. Write to Firestore (line 314)
+4. Run `afterCreate` hooks (line 317)
+5. Return result
+
+## Basic Hook Usage
+
+### Simple Logging
+
+```typescript
+import { FirestoreRepository } from '@spacelabs/firestore-orm';
+
+const userRepo = new FirestoreRepository<User>(db, 'users');
+
+// Log all user creations
+userRepo.on('afterCreate', (user) => {
+  console.log(`User created: ${user.id} - ${user.name}`);
+});
+
+// Log all updates
+userRepo.on('afterUpdate', (user) => {
+  console.log(`User updated: ${user.id}`);
+});
+
+// Log deletions
+userRepo.on('afterDelete', (user) => {
+  console.log(`User deleted: ${user.id}`);
+});
+```
+
+### Async Operations
+
+Hooks can be async functions:
+
+```typescript
+// Send welcome email after user creation
+userRepo.on('afterCreate', async (user) => {
+  await sendEmail(user.email, 'Welcome!', {
+    name: user.name,
+    template: 'welcome'
+  });
+});
+
+// Update search index
+userRepo.on('afterUpdate', async (user) => {
+  await searchIndex.updateDocument(user.id, {
+    name: user.name,
+    email: user.email
+  });
+});
+```
+
+### Validation Hooks
+
+```typescript
+// Business rule validation
+orderRepo.on('beforeUpdate', (data) => {
+  if (data.status === 'shipped' && !data.trackingNumber) {
+    throw new Error('Tracking number required for shipped orders');
+  }
+});
+
+// Price validation
+productRepo.on('beforeCreate', (product) => {
+  if (product.discount && product.discount >= product.price) {
+    throw new Error('Discount cannot be greater than or equal to price');
+  }
+});
+```
+
+## Advanced Hook Patterns
+
+### Audit Logging
+
+```typescript
+interface AuditLog {
+  action: string;
+  collection: string;
+  documentId: string;
+  userId?: string;
+  timestamp: string;
+  before?: any;
+  after?: any;
+}
+
+const auditRepo = new FirestoreRepository<AuditLog>(db, 'audit_logs');
+
+function setupAuditLogging<T>(repo: FirestoreRepository<T>, collectionName: string) {
+  // Log creates
+  repo.on('afterCreate', async (doc) => {
+    await auditRepo.create({
+      action: 'CREATE',
+      collection: collectionName,
+      documentId: doc.id!,
+      timestamp: new Date().toISOString(),
+      after: doc
+    });
+  });
+
+  // Log updates
+  repo.on('afterUpdate', async (doc) => {
+    await auditRepo.create({
+      action: 'UPDATE',
+      collection: collectionName,
+      documentId: doc.id!,
+      timestamp: new Date().toISOString(),
+      after: doc
+    });
+  });
+
+  // Log deletes
+  repo.on('afterDelete', async (doc) => {
+    await auditRepo.create({
+      action: 'DELETE',
+      collection: collectionName,
+      documentId: doc.id!,
+      timestamp: new Date().toISOString(),
+      before: doc
+    });
+  });
+}
+
+// Apply to any repository
+setupAuditLogging(userRepo, 'users');
+setupAuditLogging(orderRepo, 'orders');
+```
+
+### Cache Invalidation
+
+```typescript
+import { Redis } from 'ioredis';
+
+const redis = new Redis();
+
+function setupCacheInvalidation<T>(repo: FirestoreRepository<T>, cachePrefix: string) {
+  // Invalidate cache on update
+  repo.on('afterUpdate', async (doc) => {
+    await redis.del(`${cachePrefix}:${doc.id}`);
+    await redis.del(`${cachePrefix}:list`);
+  });
+
+  // Invalidate on delete
+  repo.on('afterDelete', async (doc) => {
+    await redis.del(`${cachePrefix}:${doc.id}`);
+    await redis.del(`${cachePrefix}:list`);
+  });
+
+  // Invalidate on soft delete
+  repo.on('afterSoftDelete', async (doc) => {
+    await redis.del(`${cachePrefix}:${doc.id}`);
+    await redis.del(`${cachePrefix}:list`);
+  });
+}
+
+setupCacheInvalidation(productRepo, 'product');
+```
+
+### Notification System
+
+```typescript
+interface Notification {
+  userId: string;
+  type: string;
+  message: string;
+  read: boolean;
+  createdAt: string;
+}
+
+const notificationRepo = new FirestoreRepository<Notification>(db, 'notifications');
+
+// Notify user on order status change
+orderRepo.on('afterUpdate', async (order) => {
+  if (order.status === 'shipped') {
+    await notificationRepo.create({
+      userId: order.userId,
+      type: 'order_shipped',
+      message: `Your order #${order.id} has been shipped!`,
+      read: false,
+      createdAt: new Date().toISOString()
+    });
+  }
+});
+
+// Notify followers when user posts
+postRepo.on('afterCreate', async (post) => {
+  const followers = await followerRepo.query()
+    .where('followingId', '==', post.authorId)
+    .get();
+
+  const notifications = followers.map(follower => ({
+    userId: follower.userId,
+    type: 'new_post',
+    message: `${post.authorName} posted: ${post.title}`,
+    read: false,
+    createdAt: new Date().toISOString()
+  }));
+
+  if (notifications.length > 0) {
+    await notificationRepo.bulkCreate(notifications);
+  }
+});
+```
+
+### Analytics Tracking
+
+```typescript
+import { Analytics } from './analytics';
+
+const analytics = new Analytics();
+
+// Track user signup
+userRepo.on('afterCreate', async (user) => {
+  await analytics.track('user_signed_up', {
+    userId: user.id,
+    email: user.email,
+    signupMethod: user.signupMethod,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Track purchases
+orderRepo.on('afterCreate', async (order) => {
+  await analytics.track('purchase_completed', {
+    userId: order.userId,
+    orderId: order.id,
+    total: order.total,
+    itemCount: order.items.length,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Track cancellations
+orderRepo.on('afterSoftDelete', async (order) => {
+  await analytics.track('order_cancelled', {
+    userId: order.userId,
+    orderId: order.id,
+    total: order.total,
+    timestamp: new Date().toISOString()
+  });
+});
+```
+
+## Bulk Operation Hooks
+
+### Bulk Create Hook
+
+From `src/core/FirestoreRepository.ts:352-375`:
+
+```typescript
+async bulkCreate(dataArray: T[]): Promise<(T & { id: ID })[]> {
+  try{
+    const colRef = this.col();
+    const createdDocs: (T & {id: ID})[] = [];
+    const actions: ((batch: FirebaseFirestore.WriteBatch) => void)[] = [];
+
+    for(const data of dataArray){
+      const validData = this.validator ? this.validator.parseCreate(data) : data;
+      const docRef = colRef.doc();
+      const docData = { ...validData, deletedAt: null } as any;
+
+      actions.push(batch => batch.set(docRef, docData))
+      createdDocs.push({ ...docData, id: docRef.id });
+    }
+
+    await this.runHooks('beforeBulkCreate', createdDocs);
+    await this.commitInChunks(actions);
+    await this.runHooks('afterBulkCreate', createdDocs);
+    return createdDocs;
+  }catch(error: any){
+    if(error instanceof z.ZodError) throw new ValidationError(error.issues);
+    throw parseFirestoreError(error);
+  }
+}
+```
+
+Bulk hooks receive all documents:
+
+```typescript
+userRepo.on('afterBulkCreate', async (users) => {
+  console.log(`Created ${users.length} users`);
+  
+  // Send welcome emails in parallel
+  await Promise.all(
+    users.map(user => 
+      sendEmail(user.email, 'Welcome!', { name: user.name })
+    )
+  );
+});
+```
+
+### Bulk Delete Hook
+
+From `src/core/FirestoreRepository.ts:659-696`:
+
+```typescript
+async bulkDelete(ids: ID[]): Promise<number> {
+  try{
+    const snapshots = await Promise.all(
+      ids.map(id => this.col().doc(id).get())
+    );
+
+    const docsData: (T & { id: ID })[] = snapshots
+      .filter(snapshot => snapshot.exists)
+      .map(snapshot => ({
+        ...snapshot.data() as T,
+        id: snapshot.id
+      })
+    );
+
+    if(docsData.length == 0) return 0;
+
+    await this.runHooks('beforeBulkDelete', {
+      ids: docsData.map(d => d.id),
+      documents: docsData
+    });
+
+    const actions: ((batch: FirebaseFirestore.WriteBatch) => void)[] = [];
+    for(const doc of docsData){
+      const docRef = this.col().doc(doc.id);
+      actions.push(batch => batch.delete(docRef));
+    }
+
+    await this.commitInChunks(actions);
+    await this.runHooks('afterBulkDelete', {
+      ids: docsData.map(d => d.id),
+      documents: docsData
+    });
+    return docsData.length;
+  }catch(error: any){
+    throw parseFirestoreError(error);
+  }
+}
+```
+
+Bulk delete hooks receive IDs and documents:
+
+```typescript
+userRepo.on('afterBulkDelete', async ({ ids, documents }) => {
+  console.log(`Deleted ${ids.length} users`);
+  
+  // Clean up related data
+  for (const userId of ids) {
+    await sessionRepo.query()
+      .where('userId', '==', userId)
+      .delete();
+    
+    await notificationRepo.query()
+      .where('userId', '==', userId)
+      .delete();
+  }
+  
+  // Log to audit trail
+  await auditRepo.bulkCreate(
+    documents.map(doc => ({
+      action: 'BULK_DELETE',
+      documentId: doc.id,
+      timestamp: new Date().toISOString()
+    }))
+  );
+});
+```
+
+## Real-World Examples
+
+### E-commerce Order Processing
+
+```typescript
+interface Order {
+  id?: string;
+  userId: string;
+  items: OrderItem[];
+  status: 'pending' | 'processing' | 'shipped' | 'delivered';
+  total: number;
+  trackingNumber?: string;
+}
+
+const orderRepo = new FirestoreRepository<Order>(db, 'orders');
+
+// Send order confirmation email
+orderRepo.on('afterCreate', async (order) => {
+  await sendEmail(order.userId, 'Order Confirmation', {
+    orderId: order.id,
+    total: order.total,
+    items: order.items
+  });
+});
+
+// Update inventory when order is created
+orderRepo.on('afterCreate', async (order) => {
+  for (const item of order.items) {
+    const product = await productRepo.getById(item.productId);
+    if (product) {
+      await productRepo.update(item.productId, {
+        stock: product.stock - item.quantity
+      });
+    }
+  }
+});
+
+// Send shipping notification
+orderRepo.on('afterUpdate', async (order) => {
+  if (order.status === 'shipped' && order.trackingNumber) {
+    await sendEmail(order.userId, 'Order Shipped', {
+      orderId: order.id,
+      trackingNumber: order.trackingNumber,
+      trackingUrl: `https://track.example.com/${order.trackingNumber}`
+    });
+  }
+});
+
+// Restore inventory on cancellation
+orderRepo.on('afterSoftDelete', async (order) => {
+  for (const item of order.items) {
+    const product = await productRepo.getById(item.productId);
+    if (product) {
+      await productRepo.update(item.productId, {
+        stock: product.stock + item.quantity
+      });
+    }
+  }
+});
+```
+
+### User Management System
+
+```typescript
+interface User {
+  id?: string;
+  email: string;
+  name: string;
+  role: 'user' | 'admin';
+  verified: boolean;
+  lastLogin?: string;
+}
+
+const userRepo = new FirestoreRepository<User>(db, 'users');
+
+// Create user profile on signup
+userRepo.on('afterCreate', async (user) => {
+  await profileRepo.create({
+    userId: user.id!,
+    bio: '',
+    avatar: null,
+    createdAt: new Date().toISOString()
+  });
+});
+
+// Send verification email
+userRepo.on('afterCreate', async (user) => {
+  if (!user.verified) {
+    const token = generateVerificationToken(user.id!);
+    await sendEmail(user.email, 'Verify Your Email', {
+      verificationUrl: `https://app.example.com/verify?token=${token}`
+    });
+  }
+});
+
+// Log role changes
+userRepo.on('afterUpdate', async (user) => {
+  const before = await userRepo.getById(user.id!);
+  if (before?.role !== user.role) {
+    await auditRepo.create({
+      action: 'ROLE_CHANGED',
+      userId: user.id!,
+      before: before.role,
+      after: user.role,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Clean up user data on deletion
+userRepo.on('afterDelete', async (user) => {
+  // Delete related data
+  await Promise.all([
+    profileRepo.query().where('userId', '==', user.id).delete(),
+    sessionRepo.query().where('userId', '==', user.id).delete(),
+    notificationRepo.query().where('userId', '==', user.id).delete()
+  ]);
+});
+```
+
+### Content Publishing Platform
+
+```typescript
+interface Post {
+  id?: string;
+  title: string;
+  content: string;
+  authorId: string;
+  published: boolean;
+  publishedAt?: string;
+  views: number;
+}
+
+const postRepo = new FirestoreRepository<Post>(db, 'posts');
+
+// Generate slug on creation
+postRepo.on('beforeCreate', async (post) => {
+  (post as any).slug = generateSlug(post.title);
+  (post as any).views = 0;
+});
+
+// Index for search
+postRepo.on('afterCreate', async (post) => {
+  await searchIndex.addDocument({
+    id: post.id!,
+    title: post.title,
+    content: post.content,
+    authorId: post.authorId
+  });
+});
+
+// Notify followers on publish
+postRepo.on('afterUpdate', async (post) => {
+  const before = await postRepo.getById(post.id!);
+  
+  // Just published
+  if (!before?.published && post.published) {
+    const followers = await followerRepo.query()
+      .where('followingId', '==', post.authorId)
+      .get();
+
+    await notificationRepo.bulkCreate(
+      followers.map(f => ({
+        userId: f.userId,
+        type: 'new_post',
+        message: `New post: ${post.title}`,
+        read: false,
+        createdAt: new Date().toISOString()
+      }))
+    );
+  }
+});
+
+// Update search index
+postRepo.on('afterUpdate', async (post) => {
+  await searchIndex.updateDocument(post.id!, {
+    title: post.title,
+    content: post.content
+  });
+});
+
+// Remove from search on delete
+postRepo.on('afterDelete', async (post) => {
+  await searchIndex.removeDocument(post.id!);
+});
+```
+
+## Error Handling in Hooks
+
+### Hook Errors Fail the Operation
+
+```typescript
+userRepo.on('beforeCreate', async (user) => {
+  const existing = await userRepo.query()
+    .where('email', '==', user.email)
+    .getOne();
+  
+  if (existing) {
+    throw new Error('Email already exists'); // This stops the create
+  }
+});
+
+try {
+  await userRepo.create({
+    name: 'John',
+    email: 'existing@example.com'
+  });
+} catch (error) {
+  console.log(error.message); // "Email already exists"
+  // User was NOT created
+}
+```
+
+### Graceful Error Handling
+
+```typescript
+// Don't let non-critical hooks fail the operation
+userRepo.on('afterCreate', async (user) => {
+  try {
+    await sendWelcomeEmail(user.email);
+  } catch (error) {
+    // Log error but don't throw - user was already created
+    console.error('Failed to send welcome email:', error);
+    await errorLog.create({
+      type: 'email_failed',
+      userId: user.id,
+      error: error.message
+    });
+  }
+});
+```
+
+## Best Practices
+
+### 1. Keep Hooks Focused
+
+```typescript
+// Good: One responsibility per hook
+userRepo.on('afterCreate', async (user) => {
+  await sendWelcomeEmail(user.email);
+});
+
+userRepo.on('afterCreate', async (user) => {
+  await analytics.track('user_signup', { userId: user.id });
+});
+
+// Avoid: Multiple responsibilities in one hook
+userRepo.on('afterCreate', async (user) => {
+  await sendWelcomeEmail(user.email);
+  await analytics.track('user_signup', { userId: user.id });
+  await createUserProfile(user.id);
+  await notifyAdmins(user);
+});
+```
+
+### 2. Use Before Hooks for Validation
+
+```typescript
+// Validate business rules before the operation
+orderRepo.on('beforeCreate', (order) => {
+  if (order.total < 0) {
+    throw new Error('Order total cannot be negative');
+  }
+  if (order.items.length === 0) {
+    throw new Error('Order must have at least one item');
+  }
+});
+```
+
+### 3. Use After Hooks for Side Effects
+
+```typescript
+// Side effects after successful operation
+userRepo.on('afterCreate', async (user) => {
+  await sendWelcomeEmail(user.email);
+});
+
+userRepo.on('afterUpdate', async (user) => {
+  await invalidateCache(user.id);
+});
+```
+
+### 4. Handle Errors Appropriately
+
+```typescript
+// Critical: Throw to prevent operation
+userRepo.on('beforeCreate', async (user) => {
+  const exists = await checkEmailExists(user.email);
+  if (exists) throw new Error('Email taken');
+});
+
+// Non-critical: Catch and log
+userRepo.on('afterCreate', async (user) => {
+  try {
+    await sendEmail(user.email, 'Welcome!');
+  } catch (error) {
+    console.error('Email failed:', error);
+  }
+});
+```
+
+### 5. Avoid Infinite Loops
+
+```typescript
+// Bad: Creates infinite loop
+userRepo.on('afterUpdate', async (user) => {
+  await userRepo.update(user.id!, { lastModified: new Date() });
+  // This triggers afterUpdate again!
+});
+
+// Good: Use a flag or condition
+userRepo.on('afterUpdate', async (user) => {
+  if (!(user as any)._skipHook) {
+    await someOtherRepo.update(relatedId, { ... });
+  }
+});
+```
+
+## What's Next?
+
+- Learn about [Repository Pattern](/concepts/repository-pattern) for overall structure
+- Explore [Schema Validation](/concepts/schema-validation) to combine with hooks
+- Review [Soft Deletes](/concepts/soft-deletes) for deletion lifecycle hooks

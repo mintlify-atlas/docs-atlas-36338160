@@ -1,0 +1,173 @@
+---
+title: Validation
+description: Schema validation utilities using Zod for type-safe data parsing
+---
+
+The validation module provides utilities for creating type-safe validators using Zod schemas. These validators ensure data integrity for create and update operations.
+
+## Types
+
+### Validator\<T\>
+
+A validator interface that provides parsing methods for create and update operations.
+
+<ResponseField name="parseCreate" type="(input: unknown) => T" required>
+  Parses and validates input data for create operations. Throws a ZodError if validation fails.
+</ResponseField>
+
+<ResponseField name="parseUpdate" type="(input: unknown) => Partial<T>" required>
+  Parses and validates input data for update operations. Returns partial data and throws a ZodError if validation fails.
+</ResponseField>
+
+## Functions
+
+### makeValidator
+
+Creates a validator instance from Zod schemas for create and update operations.
+
+```typescript
+function makeValidator<T extends z.ZodObject<any>>(
+  createSchema: T,
+  updateSchema?: T
+): Validator<z.infer<T>>
+```
+
+#### Parameters
+
+<ParamField path="createSchema" type="z.ZodObject<any>" required>
+  Zod schema for validating create operations. This schema defines the shape of data required when creating new documents.
+</ParamField>
+
+<ParamField path="updateSchema" type="z.ZodObject<any>">
+  Optional Zod schema for validating update operations. If not provided, the createSchema is automatically made partial for updates.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="Validator<z.infer<T>>" type="object">
+  A validator instance with `parseCreate` and `parseUpdate` methods.
+</ResponseField>
+
+#### Usage Example
+
+```typescript
+import { z } from 'zod';
+import { makeValidator } from '@spacelabs/firestoreorm/core/Validation';
+
+// Define your schema
+const userSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  age: z.number().positive(),
+  createdAt: z.date().default(() => new Date())
+});
+
+// Create a validator
+const userValidator = makeValidator(userSchema);
+
+// Use for create operations
+try {
+  const validData = userValidator.parseCreate({
+    name: 'John Doe',
+    email: 'john@example.com',
+    age: 30
+  });
+  console.log(validData);
+} catch (error) {
+  console.error('Validation failed:', error);
+}
+
+// Use for update operations (all fields optional)
+try {
+  const validUpdate = userValidator.parseUpdate({
+    age: 31
+  });
+  console.log(validUpdate);
+} catch (error) {
+  console.error('Validation failed:', error);
+}
+```
+
+#### Custom Update Schema
+
+You can provide a custom update schema if you need different validation rules for updates:
+
+```typescript
+const createSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  role: z.enum(['user', 'admin'])
+});
+
+const updateSchema = z.object({
+  email: z.string().email().optional(),
+  password: z.string().min(8).optional(),
+  // Role cannot be updated
+}).strict();
+
+const validator = makeValidator(createSchema, updateSchema);
+```
+
+## Integration with Repository
+
+Validators are typically used with the Repository pattern to ensure type safety:
+
+```typescript
+import { Repository } from '@spacelabs/firestoreorm';
+import { Firestore } from '@google-cloud/firestore';
+
+interface User {
+  name: string;
+  email: string;
+  age: number;
+}
+
+const userSchema = z.object({
+  name: z.string(),
+  email: z.string().email(),
+  age: z.number().positive()
+});
+
+const userValidator = makeValidator(userSchema);
+const db = new Firestore();
+
+const userRepo = new Repository<User>({
+  firestore: db,
+  collectionPath: 'users',
+  validator: userValidator
+});
+
+// The repository will automatically validate data
+await userRepo.create({
+  name: 'Alice',
+  email: 'alice@example.com',
+  age: 25
+});
+```
+
+## Error Handling
+
+When validation fails, Zod throws a `ZodError` with detailed information about what went wrong:
+
+```typescript
+import { ZodError } from 'zod';
+
+try {
+  userValidator.parseCreate({
+    name: '',
+    email: 'invalid-email',
+    age: -5
+  });
+} catch (error) {
+  if (error instanceof ZodError) {
+    console.log(error.issues);
+    // [
+    //   { path: ['name'], message: 'String must contain at least 1 character(s)' },
+    //   { path: ['email'], message: 'Invalid email' },
+    //   { path: ['age'], message: 'Number must be greater than 0' }
+    // ]
+  }
+}
+```
+
+The repository converts ZodErrors into ValidationError instances that are handled by the error handler middleware.

@@ -1,80 +1,513 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Build your first FirestoreORM repository and perform CRUD operations
 ---
 
-## Get started in three steps
+# Quick Start Guide
 
-Get your documentation site running locally and make your first customization.
+This guide will walk you through creating your first FirestoreORM repository and performing basic CRUD operations.
 
-### Step 1: Set up your local environment
+## Complete Working Example
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+Let's build a user management system from scratch.
 
-### Step 2: Deploy your changes
+### Step 1: Initialize Firebase
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+First, set up your Firebase Admin SDK connection:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+```typescript config/firebase.ts
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+const app = initializeApp({
+  credential: cert('./serviceAccountKey.json')
+});
 
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+export const db = getFirestore(app);
+```
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+Make sure you've downloaded your Firebase service account key and placed it in your project root. See the [Installation Guide](/installation) for details.
 </Note>
+
+### Step 2: Define Your Schema
+
+Create a Zod schema to validate your data:
+
+```typescript schemas/user.schema.ts
+import { z } from 'zod';
+
+export const userSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1, 'Name is required'),
+  email: z.string().email('Invalid email address'),
+  age: z.number().int().positive().optional(),
+  status: z.enum(['active', 'inactive', 'suspended']).default('active'),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+
+export type User = z.infer<typeof userSchema>;
+```
+
+<Tip>
+Always include `id: z.string().optional()` in your schema. The ORM will auto-generate IDs for new documents.
+</Tip>
+
+### Step 3: Create Your Repository
+
+Create a repository instance for the users collection:
+
+```typescript repositories/user.repository.ts
+import { FirestoreRepository } from '@spacelabstech/firestoreorm';
+import { db } from '../config/firebase';
+import { userSchema, User } from '../schemas/user.schema';
+
+export const userRepo = FirestoreRepository.withSchema<User>(
+  db,
+  'users',
+  userSchema
+);
+```
+
+### Step 4: Perform CRUD Operations
+
+Now you can use the repository to interact with Firestore:
+
+<CodeGroup>
+
+```typescript Create
+import { userRepo } from './repositories/user.repository';
+
+// Create a new user
+const user = await userRepo.create({
+  name: 'John Doe',
+  email: 'john@example.com',
+  age: 30,
+  status: 'active',
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString()
+});
+
+console.log('Created user:', user.id);
+// Output: Created user: abc123def456
+```
+
+```typescript Read
+import { userRepo } from './repositories/user.repository';
+
+// Get a user by ID
+const user = await userRepo.getById('abc123def456');
+
+if (user) {
+  console.log(user.name); // "John Doe"
+  console.log(user.email); // "john@example.com"
+} else {
+  console.log('User not found');
+}
+```
+
+```typescript Update
+import { userRepo } from './repositories/user.repository';
+
+// Update a user
+const updated = await userRepo.update('abc123def456', {
+  age: 31,
+  updatedAt: new Date().toISOString()
+});
+
+console.log('Updated user age:', updated.age); // 31
+```
+
+```typescript Delete
+import { userRepo } from './repositories/user.repository';
+
+// Soft delete (recoverable)
+await userRepo.softDelete('abc123def456');
+console.log('User soft deleted');
+
+// Hard delete (permanent)
+await userRepo.delete('abc123def456');
+console.log('User permanently deleted');
+```
+
+</CodeGroup>
+
+## Querying Data
+
+FirestoreORM provides a powerful query builder for complex queries:
+
+### Basic Queries
+
+```typescript
+// Find active users
+const activeUsers = await userRepo.query()
+  .where('status', '==', 'active')
+  .get();
+
+console.log(`Found ${activeUsers.length} active users`);
+```
+
+### Advanced Queries
+
+```typescript
+// Complex query with multiple conditions
+const results = await userRepo.query()
+  .where('status', '==', 'active')
+  .where('age', '>', 18)
+  .orderBy('createdAt', 'desc')
+  .limit(10)
+  .get();
+
+console.log('Recent adult users:', results);
+```
+
+### Pagination
+
+```typescript
+// Cursor-based pagination (recommended)
+const { items, nextCursorId } = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .paginate(20);
+
+console.log('First page:', items);
+
+// Get next page
+if (nextCursorId) {
+  const nextPage = await userRepo.query()
+    .orderBy('createdAt', 'desc')
+    .paginate(20, nextCursorId);
+  
+  console.log('Second page:', nextPage.items);
+}
+```
+
+## Soft Deletes and Recovery
+
+FirestoreORM includes built-in soft delete functionality:
+
+<Steps>
+  <Step title="Soft Delete a Document">
+    Documents are marked with `deletedAt` instead of being removed:
+    
+    ```typescript
+    await userRepo.softDelete('user-123');
+    ```
+  </Step>
+  
+  <Step title="Soft Deleted Documents are Hidden">
+    By default, soft-deleted documents don't appear in queries:
+    
+    ```typescript
+    const user = await userRepo.getById('user-123');
+    console.log(user); // null (even though document still exists)
+    ```
+  </Step>
+  
+  <Step title="Access Deleted Documents">
+    Use `includeDeleted` flag to retrieve soft-deleted documents:
+    
+    ```typescript
+    const deletedUser = await userRepo.getById('user-123', true);
+    console.log(deletedUser.deletedAt); // ISO timestamp
+    ```
+  </Step>
+  
+  <Step title="Restore Deleted Documents">
+    Recover soft-deleted documents easily:
+    
+    ```typescript
+    await userRepo.restore('user-123');
+    const restored = await userRepo.getById('user-123');
+    console.log('User restored:', restored.name);
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Soft deletes only work when you use repository methods. Direct Firestore SDK calls bypass this functionality.
+</Warning>
+
+## Validation and Error Handling
+
+FirestoreORM automatically validates data against your Zod schema:
+
+```typescript
+import { ValidationError, NotFoundError } from '@spacelabstech/firestoreorm';
+
+try {
+  // This will fail validation
+  await userRepo.create({
+    name: '', // Too short
+    email: 'not-an-email', // Invalid format
+    age: -5, // Must be positive
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.log('Validation failed:');
+    error.issues.forEach(issue => {
+      console.log(`  ${issue.path.join('.')}: ${issue.message}`);
+    });
+    // Output:
+    // Validation failed:
+    //   name: String must contain at least 1 character(s)
+    //   email: Invalid email address
+    //   age: Number must be greater than 0
+  }
+}
+```
+
+### Handling Not Found Errors
+
+```typescript
+try {
+  await userRepo.update('non-existent-id', {
+    name: 'New Name',
+    updatedAt: new Date().toISOString()
+  });
+} catch (error) {
+  if (error instanceof NotFoundError) {
+    console.log('User not found');
+  }
+}
+```
+
+## Bulk Operations
+
+Perform operations on multiple documents efficiently:
+
+### Bulk Create
+
+```typescript
+const users = await userRepo.bulkCreate([
+  {
+    name: 'Alice',
+    email: 'alice@example.com',
+    status: 'active',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  },
+  {
+    name: 'Bob',
+    email: 'bob@example.com',
+    status: 'active',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  },
+  {
+    name: 'Charlie',
+    email: 'charlie@example.com',
+    status: 'active',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  }
+]);
+
+console.log(`Created ${users.length} users`);
+```
+
+### Bulk Update
+
+```typescript
+await userRepo.bulkUpdate([
+  { id: 'user-1', data: { status: 'active' } },
+  { id: 'user-2', data: { status: 'inactive' } },
+  { id: 'user-3', data: { status: 'suspended' } }
+]);
+```
+
+### Query-Based Updates
+
+```typescript
+// Update all matching documents
+const updatedCount = await userRepo.query()
+  .where('status', '==', 'inactive')
+  .update({
+    status: 'active',
+    updatedAt: new Date().toISOString()
+  });
+
+console.log(`Updated ${updatedCount} users`);
+```
+
+## Nested Field Updates with Dot Notation
+
+Update nested fields without replacing entire objects:
+
+```typescript
+// Define schema with nested objects
+const userSchema = z.object({
+  id: z.string().optional(),
+  name: z.string(),
+  address: z.object({
+    street: z.string(),
+    city: z.string(),
+    zipCode: z.string()
+  }),
+  settings: z.object({
+    notifications: z.boolean(),
+    theme: z.string()
+  })
+});
+
+// Update only specific nested fields
+await userRepo.update('user-123', {
+  'address.city': 'Los Angeles',
+  'settings.theme': 'dark'
+} as any);
+
+// Other fields (address.street, address.zipCode, settings.notifications) remain unchanged
+```
+
+<Info>
+The `as any` cast is required for dot notation keys since they're dynamic strings. The update is still validated against your schema.
+</Info>
+
+## Lifecycle Hooks
+
+Add custom logic at specific points in the data lifecycle:
+
+```typescript
+import { userRepo } from './repositories/user.repository';
+
+// Log all user creations
+userRepo.on('afterCreate', async (user) => {
+  console.log(`New user created: ${user.id}`);
+});
+
+// Send welcome email
+userRepo.on('afterCreate', async (user) => {
+  await sendWelcomeEmail(user.email);
+});
+
+// Validate business rules before update
+userRepo.on('beforeUpdate', (data) => {
+  if (data.status === 'suspended' && !data.suspendedReason) {
+    throw new Error('Suspended users must have a reason');
+  }
+});
+
+// Now create a user - hooks will run automatically
+const user = await userRepo.create({
+  name: 'Jane Doe',
+  email: 'jane@example.com',
+  status: 'active',
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString()
+});
+// Console: "New user created: xyz789"
+// Email sent to jane@example.com
+```
+
+## Complete Example: User Management API
+
+Here's a complete example combining everything:
+
+```typescript app.ts
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+import { FirestoreRepository, ValidationError, NotFoundError } from '@spacelabstech/firestoreorm';
+import { z } from 'zod';
+
+// 1. Initialize Firebase
+const app = initializeApp({
+  credential: cert('./serviceAccountKey.json')
+});
+const db = getFirestore(app);
+
+// 2. Define schema
+const userSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1),
+  email: z.string().email(),
+  age: z.number().int().positive().optional(),
+  status: z.enum(['active', 'inactive', 'suspended']).default('active'),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+
+type User = z.infer<typeof userSchema>;
+
+// 3. Create repository
+const userRepo = FirestoreRepository.withSchema<User>(
+  db,
+  'users',
+  userSchema
+);
+
+// 4. Add hooks
+userRepo.on('afterCreate', async (user) => {
+  console.log(`✓ User ${user.name} created with ID: ${user.id}`);
+});
+
+// 5. Use the repository
+async function main() {
+  try {
+    // Create user
+    const user = await userRepo.create({
+      name: 'John Doe',
+      email: 'john@example.com',
+      age: 30,
+      status: 'active',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    // Query users
+    const activeUsers = await userRepo.query()
+      .where('status', '==', 'active')
+      .where('age', '>', 18)
+      .orderBy('createdAt', 'desc')
+      .limit(10)
+      .get();
+
+    console.log(`Found ${activeUsers.length} active adult users`);
+
+    // Update user
+    await userRepo.update(user.id, {
+      age: 31,
+      updatedAt: new Date().toISOString()
+    });
+
+    // Soft delete
+    await userRepo.softDelete(user.id);
+    console.log('User soft deleted (can be restored)');
+
+    // Restore
+    await userRepo.restore(user.id);
+    console.log('User restored');
+
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      console.error('Validation failed:', error.message);
+    } else if (error instanceof NotFoundError) {
+      console.error('Document not found:', error.message);
+    } else {
+      console.error('Error:', error);
+    }
+  }
+}
+
+main();
+```
+
+## Next Steps
+
+Now that you understand the basics, explore more advanced features:
+
+<CardGroup cols={2}>
+  <Card title="Query Builder" icon="magnifying-glass" href="/queries">
+    Learn about advanced queries, pagination, and aggregations
+  </Card>
+  <Card title="Transactions" icon="arrows-rotate" href="/transactions">
+    Perform atomic operations with ACID guarantees
+  </Card>
+  <Card title="Lifecycle Hooks" icon="webhook" href="/hooks">
+    Add logging, validation, and side effects to your data layer
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/errors">
+    Handle validation, not found, and Firestore index errors
+  </Card>
+</CardGroup>

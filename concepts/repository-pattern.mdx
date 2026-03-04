@@ -1,0 +1,409 @@
+---
+title: Repository Pattern
+description: Learn how FirestoreORM implements the repository pattern to provide a clean, type-safe interface for Firestore operations
+---
+
+## What is the Repository Pattern?
+
+The repository pattern creates an abstraction layer between your application logic and data storage. Instead of scattering Firestore queries throughout your code, you centralize all database operations in repository classes. This provides several key benefits:
+
+- **Separation of concerns**: Business logic stays separate from data access code
+- **Testability**: Easy to mock repositories for unit testing
+- **Consistency**: Standardized way to interact with your data
+- **Type safety**: Full TypeScript support with compile-time checks
+
+## Why Use Repositories?
+
+Firebase's native SDK is powerful but verbose. Simple operations require multiple lines of boilerplate code, and there's no built-in validation or type safety. The repository pattern solves this by providing:
+
+1. **Cleaner code**: One-line operations instead of callback chains
+2. **Automatic validation**: Integrate Zod schemas for runtime type checking
+3. **Built-in features**: Soft deletes, lifecycle hooks, and error handling
+4. **Consistent API**: Same methods across all collections
+
+## Creating a Repository
+
+### Basic Repository
+
+The simplest way to create a repository is to instantiate `FirestoreRepository` with your Firestore instance and collection name:
+
+```typescript
+import { FirestoreRepository } from '@spacelabs/firestore-orm';
+import { getFirestore } from 'firebase-admin/firestore';
+
+interface User {
+  id?: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'user';
+  createdAt: string;
+}
+
+const db = getFirestore();
+const userRepo = new FirestoreRepository<User>(db, 'users');
+```
+
+### Repository with Schema Validation
+
+For production applications, you'll want validation. Use the `withSchema` static method to create a repository with Zod schema validation:
+
+```typescript
+import { FirestoreRepository } from '@spacelabs/firestore-orm';
+import { z } from 'zod';
+
+const userSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  role: z.enum(['admin', 'user']),
+  createdAt: z.string().datetime().optional(),
+});
+
+const userRepo = FirestoreRepository.withSchema<User>(
+  db,
+  'users',
+  userSchema
+);
+```
+
+Now all create and update operations automatically validate against your schema.
+
+## Core Operations
+
+### Create Documents
+
+```typescript
+// Single document
+const user = await userRepo.create({
+  name: 'John Doe',
+  email: 'john@example.com',
+  role: 'user',
+  createdAt: new Date().toISOString()
+});
+console.log(user.id); // Auto-generated ID
+```
+
+```typescript
+// Bulk create (uses Firestore batches)
+const users = await userRepo.bulkCreate([
+  { name: 'Alice', email: 'alice@example.com', role: 'user' },
+  { name: 'Bob', email: 'bob@example.com', role: 'admin' },
+  { name: 'Charlie', email: 'charlie@example.com', role: 'user' }
+]);
+```
+
+### Read Documents
+
+```typescript
+// Get by ID
+const user = await userRepo.getById('user-123');
+if (user) {
+  console.log(user.name);
+}
+```
+
+```typescript
+// Find by field
+const admins = await userRepo.findByField('role', 'admin');
+```
+
+```typescript
+// List with pagination
+const firstPage = await userRepo.list(20);
+const nextPage = await userRepo.list(20, firstPage[firstPage.length - 1]?.id);
+```
+
+### Update Documents
+
+```typescript
+// Partial update
+await userRepo.update('user-123', {
+  email: 'newemail@example.com'
+});
+```
+
+```typescript
+// Upsert (create or update)
+await userRepo.upsert('external-user-456', {
+  name: 'External User',
+  email: 'external@example.com',
+  role: 'user',
+  source: 'api-import'
+});
+```
+
+```typescript
+// Bulk update
+await userRepo.bulkUpdate([
+  { id: 'user-1', data: { role: 'admin' } },
+  { id: 'user-2', data: { role: 'admin' } }
+]);
+```
+
+### Delete Documents
+
+```typescript
+// Hard delete (permanent)
+await userRepo.delete('user-123');
+```
+
+```typescript
+// Soft delete (recoverable)
+await userRepo.softDelete('user-123');
+
+// Later restore it
+await userRepo.restore('user-123');
+```
+
+```typescript
+// Bulk operations
+const deletedCount = await userRepo.bulkDelete(['user-1', 'user-2', 'user-3']);
+const softDeletedCount = await userRepo.bulkSoftDelete(['user-4', 'user-5']);
+```
+
+## Advanced Querying
+
+The repository provides a fluent query builder for complex queries:
+
+```typescript
+// Complex query
+const activeAdmins = await userRepo.query()
+  .where('role', '==', 'admin')
+  .where('lastLogin', '>', lastMonth)
+  .orderBy('lastLogin', 'desc')
+  .limit(10)
+  .get();
+```
+
+```typescript
+// Pagination with cursor
+const { items, nextCursorId } = await userRepo.query()
+  .where('role', '==', 'user')
+  .orderBy('createdAt', 'desc')
+  .paginate(20);
+
+// Next page
+const nextPage = await userRepo.query()
+  .where('role', '==', 'user')
+  .orderBy('createdAt', 'desc')
+  .paginate(20, nextCursorId);
+```
+
+```typescript
+// Aggregations
+const totalUsers = await userRepo.query()
+  .where('role', '==', 'user')
+  .count();
+
+const userExists = await userRepo.query()
+  .where('email', '==', 'test@example.com')
+  .exists();
+```
+
+## Subcollections
+
+FirestoreORM makes working with subcollections intuitive:
+
+```typescript
+interface Order {
+  id?: string;
+  product: string;
+  quantity: number;
+  total: number;
+}
+
+// Access user's orders subcollection
+const userOrders = userRepo.subcollection<Order>('user-123', 'orders');
+
+// Now use it like any repository
+await userOrders.create({
+  product: 'Widget',
+  quantity: 5,
+  total: 99.95
+});
+
+const orders = await userOrders.query()
+  .where('total', '>', 50)
+  .get();
+```
+
+```typescript
+// Nested subcollections
+interface Comment {
+  id?: string;
+  text: string;
+  author: string;
+}
+
+const postRepo = new FirestoreRepository(db, 'posts');
+const comments = postRepo
+  .subcollection<Comment>('post-123', 'comments');
+
+// Check parent
+console.log(comments.getParentId()); // 'post-123'
+console.log(comments.isSubcollection()); // true
+```
+
+## Transactions
+
+FirestoreORM provides a clean API for Firestore transactions:
+
+```typescript
+// Transfer balance between accounts
+await accountRepo.runInTransaction(async (tx, repo) => {
+  const from = await repo.getForUpdate(tx, 'account-1');
+  const to = await repo.getForUpdate(tx, 'account-2');
+
+  if (!from || from.balance < 100) {
+    throw new Error('Insufficient funds');
+  }
+
+  await repo.updateInTransaction(tx, from.id, {
+    balance: from.balance - 100
+  });
+  
+  await repo.updateInTransaction(tx, to.id, {
+    balance: to.balance + 100
+  });
+});
+```
+
+```typescript
+// Atomic counter increment
+const newCount = await counterRepo.runInTransaction(async (tx, repo) => {
+  const counter = await repo.getForUpdate(tx, 'global-counter');
+  const newValue = (counter?.value || 0) + 1;
+  
+  await repo.updateInTransaction(tx, 'global-counter', {
+    value: newValue
+  });
+  
+  return newValue;
+});
+```
+
+## Real-time Updates
+
+Subscribe to real-time changes using the query builder:
+
+```typescript
+// Monitor active orders
+const unsubscribe = await orderRepo.query()
+  .where('status', '==', 'active')
+  .onSnapshot(
+    (orders) => {
+      console.log(`Active orders: ${orders.length}`);
+      updateDashboard(orders);
+    },
+    (error) => console.error('Snapshot error:', error)
+  );
+
+// Later: stop listening
+unsubscribe();
+```
+
+## Error Handling
+
+FirestoreORM provides custom error types for better error handling:
+
+```typescript
+import { NotFoundError, ValidationError } from '@spacelabs/firestore-orm';
+
+try {
+  await userRepo.update('non-existent-id', { name: 'John' });
+} catch (error) {
+  if (error instanceof NotFoundError) {
+    console.log('User not found');
+  }
+}
+
+try {
+  await userRepo.create({ name: '', email: 'invalid' });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.log('Validation failed:');
+    error.issues.forEach(issue => {
+      console.log(`  ${issue.path.join('.')}: ${issue.message}`);
+    });
+  }
+}
+```
+
+## Best Practices
+
+### 1. Create Repository Modules
+
+Organize repositories in dedicated modules:
+
+```typescript
+// repositories/users.ts
+import { FirestoreRepository } from '@spacelabs/firestore-orm';
+import { db } from '../firebase';
+import { userSchema, User } from '../schemas/user';
+
+export const userRepo = FirestoreRepository.withSchema<User>(
+  db,
+  'users',
+  userSchema
+);
+
+// Add custom methods
+export async function findByEmail(email: string) {
+  return userRepo.query()
+    .where('email', '==', email)
+    .getOne();
+}
+```
+
+### 2. Use Type-Safe Schemas
+
+Define your schemas alongside your types:
+
+```typescript
+// schemas/user.ts
+import { z } from 'zod';
+
+export const userSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  role: z.enum(['admin', 'user']),
+  verified: z.boolean().default(false),
+  createdAt: z.string().datetime()
+});
+
+export type User = z.infer<typeof userSchema> & { id?: string };
+```
+
+### 3. Leverage Bulk Operations
+
+Use bulk methods for better performance:
+
+```typescript
+// Instead of this:
+for (const userId of userIds) {
+  await userRepo.delete(userId); // N database calls
+}
+
+// Do this:
+await userRepo.bulkDelete(userIds); // 1 batched operation
+```
+
+### 4. Use Soft Deletes by Default
+
+Soft deletes allow data recovery and audit trails:
+
+```typescript
+// Soft delete for safety
+await userRepo.softDelete('user-123');
+
+// Can restore later
+await userRepo.restore('user-123');
+
+// Permanent cleanup can be scheduled
+await userRepo.purgeDelete(); // Clean all soft-deleted
+```
+
+## What's Next?
+
+- Learn about [Schema Validation](/concepts/schema-validation) for runtime type safety
+- Explore [Soft Deletes](/concepts/soft-deletes) for recoverable deletion
+- Discover [Lifecycle Hooks](/concepts/lifecycle-hooks) for side effects and logging

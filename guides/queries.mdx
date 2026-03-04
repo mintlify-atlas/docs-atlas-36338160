@@ -1,0 +1,568 @@
+---
+title: 'Building Queries'
+description: 'Master the query builder to filter, sort, and retrieve data efficiently'
+icon: 'magnifying-glass'
+---
+
+FirestoreORM provides a powerful, type-safe query builder for complex data retrieval. This guide covers filtering, sorting, aggregations, and advanced query patterns.
+
+## Query Builder Basics
+
+### Starting a Query
+
+All queries start with the `query()` method on your repository.
+
+```typescript
+const query = userRepo.query();
+```
+
+The query builder is chainable, allowing you to add multiple conditions:
+
+```typescript
+const activeUsers = await userRepo.query()
+  .where('status', '==', 'active')
+  .where('age', '>', 18)
+  .orderBy('createdAt', 'desc')
+  .limit(10)
+  .get();
+```
+
+## Filtering with Where Clauses
+
+### Equality Operators
+
+Check if a field equals or doesn't equal a value.
+
+```typescript
+// Exact match
+const activeUsers = await userRepo.query()
+  .where('status', '==', 'active')
+  .get();
+
+// Not equal
+const nonAdmins = await userRepo.query()
+  .where('role', '!=', 'admin')
+  .get();
+```
+
+### Comparison Operators
+
+Compare numeric, date, and string values.
+
+```typescript
+// Greater than
+const adults = await userRepo.query()
+  .where('age', '>', 18)
+  .get();
+
+// Greater than or equal
+const seniors = await userRepo.query()
+  .where('age', '>=', 65)
+  .get();
+
+// Less than
+const recentOrders = await orderRepo.query()
+  .where('createdAt', '<', yesterday)
+  .get();
+
+// Less than or equal
+const affordableProducts = await productRepo.query()
+  .where('price', '<=', 100)
+  .get();
+```
+
+### In and Not-In Queries
+
+Match against multiple possible values.
+
+```typescript
+// In operator (max 10 values)
+const pendingOrProcessing = await orderRepo.query()
+  .where('status', 'in', ['pending', 'processing', 'shipped'])
+  .get();
+
+// Not-in operator (max 10 values)
+const nonCancelledOrders = await orderRepo.query()
+  .where('status', 'not-in', ['cancelled', 'refunded'])
+  .get();
+```
+
+<Warning>
+Firestore limits `in` and `not-in` queries to 10 values maximum.
+</Warning>
+
+### Array Operations
+
+Query documents based on array field contents.
+
+```typescript
+// Array contains a specific value
+const jsDevs = await userRepo.query()
+  .where('skills', 'array-contains', 'javascript')
+  .get();
+
+// Array contains any of the specified values
+const webDevs = await userRepo.query()
+  .where('skills', 'array-contains-any', ['javascript', 'typescript', 'react'])
+  .get();
+```
+
+### Multiple Where Clauses
+
+Chain multiple conditions to narrow your results.
+
+```typescript
+const results = await orderRepo.query()
+  .where('status', '==', 'pending')
+  .where('total', '>', 100)
+  .where('createdAt', '>=', startOfMonth)
+  .get();
+```
+
+<Info>
+Firestore requires composite indexes for certain query combinations. The ORM will provide a link to create the index if needed.
+</Info>
+
+## Sorting Results
+
+### Single Field Ordering
+
+```typescript
+// Ascending order (default)
+const usersByName = await userRepo.query()
+  .orderBy('name', 'asc')
+  .get();
+
+// Descending order
+const recentUsers = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .get();
+```
+
+### Multi-Field Ordering
+
+Sort by multiple fields in sequence.
+
+```typescript
+const products = await productRepo.query()
+  .orderBy('category', 'asc')
+  .orderBy('price', 'desc')
+  .get();
+// Results: sorted by category first, then by price within each category
+```
+
+<Note>
+When combining `where()` and `orderBy()`, your first `orderBy()` field must match your inequality filter field or you'll need a composite index.
+</Note>
+
+## Limiting Results
+
+### Basic Limit
+
+Restrict the number of documents returned.
+
+```typescript
+// Get top 5 products by price
+const topProducts = await productRepo.query()
+  .orderBy('price', 'desc')
+  .limit(5)
+  .get();
+
+// Get first 20 users
+const users = await userRepo.query()
+  .limit(20)
+  .get();
+```
+
+### Pagination
+
+See the [Pagination Guide](/guides/pagination) for detailed pagination strategies.
+
+## Counting Documents
+
+### Count Query Results
+
+Get the number of documents matching your query without fetching them.
+
+```typescript
+// Count active users
+const activeCount = await userRepo.query()
+  .where('status', '==', 'active')
+  .count();
+
+console.log(`${activeCount} active users`);
+```
+
+### Total Collection Count
+
+Get the total number of documents in the collection.
+
+```typescript
+// Total count (excludes soft-deleted by default)
+const total = await userRepo.query().totalCount();
+
+// Total including deleted
+const totalWithDeleted = await userRepo.query()
+  .includeDeleted()
+  .totalCount();
+```
+
+<Info>
+`count()` is more efficient than fetching all documents and checking the array length.
+</Info>
+
+## Existence Checks
+
+Check if any documents match your query.
+
+```typescript
+// Check if email is already taken
+const emailExists = await userRepo.query()
+  .where('email', '==', newEmail)
+  .exists();
+
+if (emailExists) {
+  throw new Error('Email already in use');
+}
+
+// Check if user has any orders
+const hasOrders = await orderRepo.query()
+  .where('userId', '==', userId)
+  .exists();
+```
+
+## Getting Single Results
+
+### Get One Document
+
+Retrieve the first document matching your query.
+
+```typescript
+// Find user by email
+const user = await userRepo.query()
+  .where('email', '==', 'john@example.com')
+  .getOne();
+
+if (user) {
+  console.log('Found:', user.name);
+} else {
+  console.log('User not found');
+}
+
+// Get the cheapest product
+const cheapest = await productRepo.query()
+  .where('category', '==', 'books')
+  .orderBy('price', 'asc')
+  .getOne();
+```
+
+## Field Selection
+
+Retrieve only specific fields to reduce bandwidth.
+
+```typescript
+// Get only names and emails
+const users = await userRepo.query()
+  .where('status', '==', 'active')
+  .select('name', 'email')
+  .get();
+
+// users = [{ id, name, email }, ...]
+// Other fields like age, address are not included
+```
+
+<Note>
+Field selection reduces network transfer but still charges for full document reads in Firestore.
+</Note>
+
+## Aggregations
+
+### Sum Aggregation
+
+Calculate the total of a numeric field.
+
+```typescript
+// Calculate total revenue
+const totalRevenue = await orderRepo.query()
+  .where('status', '==', 'completed')
+  .aggregate('total', 'sum');
+
+console.log(`Total revenue: $${totalRevenue}`);
+```
+
+### Average Aggregation
+
+Calculate the average value of a numeric field.
+
+```typescript
+// Calculate average product rating
+const avgRating = await reviewRepo.query()
+  .where('productId', '==', productId)
+  .aggregate('rating', 'avg');
+
+console.log(`Average rating: ${avgRating.toFixed(2)} stars`);
+
+// Calculate average order value
+const avgOrderValue = await orderRepo.query()
+  .where('status', '==', 'completed')
+  .aggregate('total', 'avg');
+```
+
+## Distinct Values
+
+Get all unique values for a specific field.
+
+```typescript
+// Get all product categories
+const categories = await productRepo.query()
+  .distinctValues('category');
+console.log(categories); // ['electronics', 'books', 'clothing']
+
+// Get all order statuses in use
+const statuses = await orderRepo.query()
+  .where('createdAt', '>', lastMonth)
+  .distinctValues('status');
+```
+
+## Soft Delete Handling
+
+### Default Behavior
+
+By default, all queries exclude soft-deleted documents.
+
+```typescript
+// Only returns non-deleted users
+const users = await userRepo.query()
+  .where('status', '==', 'active')
+  .get();
+```
+
+### Include Deleted Documents
+
+```typescript
+// Include soft-deleted documents in results
+const allUsers = await userRepo.query()
+  .includeDeleted()
+  .get();
+
+// Count including deleted
+const totalCount = await userRepo.query()
+  .includeDeleted()
+  .count();
+```
+
+### Only Deleted Documents
+
+```typescript
+// Get only soft-deleted users
+const deletedUsers = await userRepo.query()
+  .onlyDeleted()
+  .get();
+
+// Count deleted users from last month
+const deletedCount = await userRepo.query()
+  .onlyDeleted()
+  .where('deletedAt', '>', lastMonth)
+  .count();
+```
+
+## Query Operations
+
+### Update All Matching Documents
+
+Update multiple documents that match your query.
+
+```typescript
+// Mark all pending orders as processing
+const updatedCount = await orderRepo.query()
+  .where('status', '==', 'pending')
+  .update({ status: 'processing' });
+
+console.log(`Updated ${updatedCount} orders`);
+```
+
+See [Bulk Operations Guide](/guides/bulk-operations) for more details.
+
+### Delete All Matching Documents
+
+```typescript
+// Delete all cancelled orders older than 30 days
+const deletedCount = await orderRepo.query()
+  .where('status', '==', 'cancelled')
+  .where('createdAt', '<', thirtyDaysAgo)
+  .delete();
+```
+
+### Soft Delete Matching Documents
+
+```typescript
+// Soft delete inactive users
+const deletedCount = await userRepo.query()
+  .where('lastLogin', '<', oneYearAgo)
+  .softDelete();
+```
+
+## Complex Query Examples
+
+### E-commerce Product Search
+
+```typescript
+const results = await productRepo.query()
+  .where('category', '==', 'electronics')
+  .where('price', '<=', 500)
+  .where('inStock', '==', true)
+  .orderBy('price', 'asc')
+  .limit(20)
+  .get();
+```
+
+### User Analytics
+
+```typescript
+// Get premium users who signed up this month
+const premiumUsers = await userRepo.query()
+  .where('plan', '==', 'premium')
+  .where('createdAt', '>=', startOfMonth)
+  .where('createdAt', '<=', endOfMonth)
+  .orderBy('createdAt', 'desc')
+  .get();
+
+// Count active users by region
+const usRegions = ['us-east', 'us-west', 'us-central'];
+const usActiveCount = await userRepo.query()
+  .where('status', '==', 'active')
+  .where('region', 'in', usRegions)
+  .count();
+```
+
+### Order Reports
+
+```typescript
+// Get order statistics for a date range
+const orders = await orderRepo.query()
+  .where('status', '==', 'completed')
+  .where('createdAt', '>=', startDate)
+  .where('createdAt', '<=', endDate)
+  .get();
+
+const totalRevenue = await orderRepo.query()
+  .where('status', '==', 'completed')
+  .where('createdAt', '>=', startDate)
+  .where('createdAt', '<=', endDate)
+  .aggregate('total', 'sum');
+
+const avgOrderValue = await orderRepo.query()
+  .where('status', '==', 'completed')
+  .where('createdAt', '>=', startDate)
+  .where('createdAt', '<=', endDate)
+  .aggregate('total', 'avg');
+
+console.log({
+  totalOrders: orders.length,
+  totalRevenue,
+  avgOrderValue
+});
+```
+
+## Composite Index Errors
+
+Firestore requires composite indexes for certain query combinations.
+
+```typescript
+try {
+  const results = await orderRepo.query()
+    .where('status', '==', 'pending')
+    .where('total', '>', 100)
+    .orderBy('createdAt', 'desc')
+    .get();
+} catch (error) {
+  if (error instanceof FirestoreIndexError) {
+    console.log(error.toString());
+    // Logs: "Firestore index required. Create it here: https://..."
+    // Click the link, wait 1-2 minutes, then retry
+  }
+}
+```
+
+<Info>
+The error message includes a direct link to create the required index in the Firebase Console.
+</Info>
+
+## Performance Tips
+
+<Steps>
+  <Step title="Always Use Limits">
+    Prevent accidentally fetching thousands of documents.
+    
+    ```typescript
+    // ✅ Good - controlled result size
+    await userRepo.query().limit(100).get();
+    
+    // ❌ Bad - could fetch entire collection
+    await userRepo.query().get();
+    ```
+  </Step>
+  
+  <Step title="Use count() Instead of Fetching">
+    When you only need the count, don't fetch the documents.
+    
+    ```typescript
+    // ✅ Efficient
+    const total = await userRepo.query()
+      .where('status', '==', 'active')
+      .count();
+    
+    // ❌ Expensive
+    const users = await userRepo.query()
+      .where('status', '==', 'active')
+      .get();
+    const total = users.length;
+    ```
+  </Step>
+  
+  <Step title="Use exists() for Presence Checks">
+    Check existence without fetching documents.
+    
+    ```typescript
+    // ✅ Reads at most 1 document
+    const hasOrders = await orderRepo.query()
+      .where('userId', '==', userId)
+      .exists();
+    
+    // ❌ Reads all matching documents
+    const orders = await orderRepo.query()
+      .where('userId', '==', userId)
+      .get();
+    const hasOrders = orders.length > 0;
+    ```
+  </Step>
+  
+  <Step title="Order Before Filtering When Possible">
+    Firestore can use indexes more efficiently with this pattern.
+    
+    ```typescript
+    await productRepo.query()
+      .orderBy('price', 'desc')
+      .where('price', '>', 100)
+      .limit(20)
+      .get();
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Pagination" icon="book-open" href="/guides/pagination">
+    Learn cursor-based and offset pagination strategies
+  </Card>
+  <Card title="Streaming" icon="water" href="/guides/streaming">
+    Process large datasets efficiently with streaming
+  </Card>
+  <Card title="Real-time" icon="bolt" href="/guides/realtime">
+    Subscribe to live query updates with onSnapshot
+  </Card>
+  <Card title="Bulk Operations" icon="layer-group" href="/guides/bulk-operations">
+    Efficiently update or delete multiple documents
+  </Card>
+</CardGroup>

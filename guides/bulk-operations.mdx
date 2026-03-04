@@ -1,0 +1,717 @@
+---
+title: 'Bulk Operations'
+description: 'Efficiently create, update, and delete multiple documents with batched operations'
+icon: 'layer-group'
+---
+
+Bulk operations allow you to perform multiple database operations efficiently using Firestore's batched writes. This guide covers all bulk operation patterns with real-world examples.
+
+## Understanding Bulk Operations
+
+Bulk operations use Firestore batch writes to perform multiple operations atomically and efficiently.
+
+### Benefits
+
+<CardGroup cols={2}>
+  <Card title="Performance" icon="gauge">
+    Batched writes are faster than individual operations
+  </Card>
+  <Card title="Atomicity" icon="shield">
+    All operations succeed or all fail together
+  </Card>
+  <Card title="Cost Effective" icon="dollar-sign">
+    Reduces network round trips
+  </Card>
+  <Card title="Auto-Chunking" icon="boxes-stacked">
+    ORM automatically handles Firestore's 500 operation limit
+  </Card>
+</CardGroup>
+
+### Firestore Batch Limits
+
+<Info>
+Firestore limits batches to 500 operations. FirestoreORM automatically chunks your operations into multiple batches if needed.
+</Info>
+
+## Bulk Create
+
+Create multiple documents in a single batched operation.
+
+### Basic Bulk Create
+
+```typescript
+const users = await userRepo.bulkCreate([
+  { name: 'Alice', email: 'alice@example.com', status: 'active' },
+  { name: 'Bob', email: 'bob@example.com', status: 'active' },
+  { name: 'Charlie', email: 'charlie@example.com', status: 'pending' }
+]);
+
+console.log(`Created ${users.length} users`);
+users.forEach(user => {
+  console.log(`Created user ${user.id}`);
+});
+```
+
+### Import from CSV/JSON
+
+```typescript
+interface CSVRow {
+  name: string;
+  email: string;
+  phone: string;
+}
+
+class ImportService {
+  async importUsers(csvData: CSVRow[]) {
+    const users = csvData.map(row => ({
+      name: row.name,
+      email: row.email,
+      phone: row.phone,
+      status: 'active' as const,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }));
+    
+    return await userRepo.bulkCreate(users);
+  }
+}
+```
+
+### Large Dataset Import
+
+```typescript
+// Import 10,000 products (automatically chunked into batches of 500)
+const products = await productRepo.bulkCreate(
+  largeProductArray // 10,000 items
+);
+// Creates 20 batches automatically
+console.log(`Imported ${products.length} products`);
+```
+
+### With Validation
+
+```typescript
+const productSchema = z.object({
+  name: z.string().min(1),
+  price: z.number().positive(),
+  sku: z.string().regex(/^[A-Z0-9-]+$/)
+});
+
+const productRepo = FirestoreRepository.withSchema<Product>(
+  db,
+  'products',
+  productSchema
+);
+
+try {
+  await productRepo.bulkCreate([
+    { name: 'Product 1', price: 10, sku: 'PROD-001' },
+    { name: '', price: -5, sku: 'invalid' }, // ❌ Validation fails
+    { name: 'Product 3', price: 30, sku: 'PROD-003' }
+  ]);
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.log('Validation failed:', error.issues);
+    // No documents are created (atomic operation)
+  }
+}
+```
+
+## Bulk Update
+
+Update multiple documents by ID.
+
+### Basic Bulk Update
+
+```typescript
+await userRepo.bulkUpdate([
+  { id: 'user-1', data: { status: 'active' } },
+  { id: 'user-2', data: { status: 'active' } },
+  { id: 'user-3', data: { status: 'inactive' } }
+]);
+```
+
+### Update with Timestamps
+
+```typescript
+const now = new Date().toISOString();
+
+await orderRepo.bulkUpdate([
+  { 
+    id: 'order-1', 
+    data: { 
+      status: 'shipped', 
+      shippedAt: now,
+      updatedAt: now 
+    } 
+  },
+  { 
+    id: 'order-2', 
+    data: { 
+      status: 'shipped',
+      shippedAt: now,
+      updatedAt: now 
+    } 
+  }
+]);
+```
+
+### Bulk Update with Dot Notation
+
+```typescript
+await userRepo.bulkUpdate([
+  { 
+    id: 'user-1', 
+    data: { 
+      'profile.verified': true,
+      'settings.notifications': false 
+    } as any 
+  },
+  { 
+    id: 'user-2', 
+    data: { 
+      'profile.verified': true,
+      'profile.bio': 'Updated bio' 
+    } as any 
+  }
+]);
+```
+
+### Update from Query Results
+
+```typescript
+// Get all pending users
+const pendingUsers = await userRepo.query()
+  .where('status', '==', 'pending')
+  .where('createdAt', '<', oneWeekAgo)
+  .get();
+
+// Activate them all
+await userRepo.bulkUpdate(
+  pendingUsers.map(user => ({
+    id: user.id,
+    data: { status: 'active', activatedAt: new Date().toISOString() }
+  }))
+);
+```
+
+<Note>
+For simple updates based on query results, consider using `query().update()` instead for better performance.
+</Note>
+
+## Bulk Delete
+
+Permanently delete multiple documents.
+
+### Basic Bulk Delete
+
+```typescript
+const deletedCount = await userRepo.bulkDelete([
+  'user-1',
+  'user-2',
+  'user-3'
+]);
+
+console.log(`Deleted ${deletedCount} users`);
+```
+
+### Delete Test Data
+
+```typescript
+class CleanupService {
+  async deleteTestUsers() {
+    const testUsers = await userRepo.query()
+      .where('email', 'array-contains', '@test.com')
+      .get();
+    
+    const testUserIds = testUsers.map(u => u.id);
+    const deletedCount = await userRepo.bulkDelete(testUserIds);
+    
+    console.log(`Deleted ${deletedCount} test users`);
+  }
+}
+```
+
+### Delete Old Records
+
+```typescript
+const sixMonthsAgo = new Date();
+sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+const oldLogs = await logRepo.query()
+  .where('createdAt', '<', sixMonthsAgo.toISOString())
+  .get();
+
+await logRepo.bulkDelete(oldLogs.map(log => log.id));
+```
+
+## Bulk Soft Delete
+
+Mark multiple documents as deleted without removing them.
+
+### Basic Bulk Soft Delete
+
+```typescript
+const deletedCount = await userRepo.bulkSoftDelete([
+  'user-1',
+  'user-2',
+  'user-3'
+]);
+
+console.log(`Soft deleted ${deletedCount} users`);
+```
+
+### Archive Inactive Users
+
+```typescript
+const oneYearAgo = new Date();
+oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+
+const inactiveUsers = await userRepo.query()
+  .where('lastLogin', '<', oneYearAgo.toISOString())
+  .get();
+
+const archivedCount = await userRepo.bulkSoftDelete(
+  inactiveUsers.map(u => u.id)
+);
+
+console.log(`Archived ${archivedCount} inactive users`);
+```
+
+## Query-Based Bulk Operations
+
+More efficient than fetching IDs then performing bulk operations.
+
+### Query Update
+
+Update all documents matching a query.
+
+```typescript
+// Update all pending orders to processing
+const updatedCount = await orderRepo.query()
+  .where('status', '==', 'pending')
+  .update({ 
+    status: 'processing',
+    updatedAt: new Date().toISOString() 
+  });
+
+console.log(`Updated ${updatedCount} orders`);
+```
+
+### Query Delete
+
+Delete all documents matching a query.
+
+```typescript
+// Delete all cancelled orders older than 30 days
+const thirtyDaysAgo = new Date();
+thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+const deletedCount = await orderRepo.query()
+  .where('status', '==', 'cancelled')
+  .where('createdAt', '<', thirtyDaysAgo.toISOString())
+  .delete();
+
+console.log(`Deleted ${deletedCount} old cancelled orders`);
+```
+
+### Query Soft Delete
+
+```typescript
+// Soft delete out-of-stock products
+const archivedCount = await productRepo.query()
+  .where('stock', '==', 0)
+  .where('restockDate', '==', null)
+  .softDelete();
+
+console.log(`Archived ${archivedCount} out-of-stock products`);
+```
+
+<Info>
+Query-based operations are more efficient because they don't require fetching document IDs first.
+</Info>
+
+## Bulk Restore
+
+Restore multiple soft-deleted documents.
+
+### Restore All Soft-Deleted
+
+```typescript
+const restoredCount = await userRepo.restoreAll();
+console.log(`Restored ${restoredCount} users`);
+```
+
+### Selective Restore
+
+Restore individual soft-deleted documents.
+
+```typescript
+// Find recently deleted users
+const deletedUsers = await userRepo.query()
+  .onlyDeleted()
+  .where('deletedAt', '>', yesterday.toISOString())
+  .get();
+
+// Restore them individually
+for (const user of deletedUsers) {
+  await userRepo.restore(user.id);
+}
+```
+
+## Real-World Examples
+
+### Data Migration
+
+```typescript
+class MigrationService {
+  async migrateUserStatus() {
+    // Get all users with old status values
+    const users = await userRepo.query()
+      .where('status', 'in', ['registered', 'confirmed'])
+      .get();
+    
+    // Map to new status values
+    const updates = users.map(user => ({
+      id: user.id,
+      data: {
+        status: user.status === 'registered' ? 'pending' : 'active',
+        migratedAt: new Date().toISOString()
+      }
+    }));
+    
+    // Bulk update (automatically chunked if > 500)
+    await userRepo.bulkUpdate(updates);
+    
+    console.log(`Migrated ${updates.length} users`);
+  }
+}
+```
+
+### Batch Processing
+
+```typescript
+class BatchProcessor {
+  async processOrders(batchSize: number = 100) {
+    let processedCount = 0;
+    let cursor: string | undefined;
+    
+    while (true) {
+      // Get next batch
+      const { items, nextCursorId } = await orderRepo.query()
+        .where('status', '==', 'pending')
+        .orderBy('createdAt', 'asc')
+        .paginate(batchSize, cursor);
+      
+      if (items.length === 0) break;
+      
+      // Process batch
+      const updates = items.map(order => ({
+        id: order.id,
+        data: {
+          status: 'processed',
+          processedAt: new Date().toISOString()
+        }
+      }));
+      
+      await orderRepo.bulkUpdate(updates);
+      
+      processedCount += items.length;
+      cursor = nextCursorId;
+      
+      if (!cursor) break;
+    }
+    
+    console.log(`Processed ${processedCount} orders`);
+  }
+}
+```
+
+### Bulk Status Change
+
+```typescript
+class SubscriptionService {
+  async expireSubscriptions() {
+    const now = new Date().toISOString();
+    
+    // Find expired subscriptions
+    const expired = await subscriptionRepo.query()
+      .where('status', '==', 'active')
+      .where('expiresAt', '<=', now)
+      .get();
+    
+    if (expired.length === 0) {
+      console.log('No expired subscriptions');
+      return;
+    }
+    
+    // Bulk update to expired status
+    const updates = expired.map(sub => ({
+      id: sub.id,
+      data: {
+        status: 'expired',
+        expiredAt: now
+      }
+    }));
+    
+    await subscriptionRepo.bulkUpdate(updates);
+    
+    // Send expiration emails
+    for (const sub of expired) {
+      await emailService.sendExpirationNotice(sub.userId);
+    }
+    
+    console.log(`Expired ${expired.length} subscriptions`);
+  }
+}
+```
+
+### Cleanup Old Data
+
+```typescript
+class CleanupService {
+  async cleanupOldLogs(daysToKeep: number = 90) {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
+    
+    // Delete in batches to avoid memory issues
+    let totalDeleted = 0;
+    
+    while (true) {
+      const oldLogs = await logRepo.query()
+        .where('createdAt', '<', cutoffDate.toISOString())
+        .limit(500) // Process 500 at a time
+        .get();
+      
+      if (oldLogs.length === 0) break;
+      
+      const deletedCount = await logRepo.bulkDelete(
+        oldLogs.map(log => log.id)
+      );
+      
+      totalDeleted += deletedCount;
+      console.log(`Deleted batch of ${deletedCount} logs`);
+    }
+    
+    console.log(`Total deleted: ${totalDeleted} logs`);
+  }
+}
+```
+
+## Lifecycle Hooks with Bulk Operations
+
+Bulk operations trigger special bulk hooks.
+
+### Bulk Create Hooks
+
+```typescript
+userRepo.on('beforeBulkCreate', async (users) => {
+  console.log(`About to create ${users.length} users`);
+});
+
+userRepo.on('afterBulkCreate', async (users) => {
+  console.log(`Created ${users.length} users`);
+  
+  // Send welcome emails
+  for (const user of users) {
+    await emailService.sendWelcome(user.email);
+  }
+});
+```
+
+### Bulk Update Hooks
+
+```typescript
+orderRepo.on('beforeBulkUpdate', async (updates) => {
+  console.log(`About to update ${updates.length} orders`);
+});
+
+orderRepo.on('afterBulkUpdate', async (updates) => {
+  // Log audit trail
+  for (const { id, data } of updates) {
+    await auditLog.record('order_updated', { orderId: id, changes: data });
+  }
+});
+```
+
+### Bulk Delete Hooks
+
+```typescript
+userRepo.on('beforeBulkDelete', async ({ ids, documents }) => {
+  console.log(`About to delete ${ids.length} users`);
+  
+  // Validate deletion is allowed
+  for (const doc of documents) {
+    if (doc.role === 'admin') {
+      throw new Error('Cannot delete admin users');
+    }
+  }
+});
+
+userRepo.on('afterBulkDelete', async ({ ids, documents }) => {
+  // Clean up related data
+  for (const user of documents) {
+    await orderRepo.query()
+      .where('userId', '==', user.id)
+      .delete();
+  }
+});
+```
+
+## Error Handling
+
+### Validation Errors
+
+```typescript
+try {
+  await productRepo.bulkCreate(products);
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.log('Validation failed:', error.issues);
+    // No documents were created (atomic operation)
+  }
+}
+```
+
+### Not Found Errors
+
+```typescript
+try {
+  await userRepo.bulkUpdate([
+    { id: 'user-1', data: { status: 'active' } },
+    { id: 'non-existent', data: { status: 'active' } },
+    { id: 'user-3', data: { status: 'active' } }
+  ]);
+} catch (error) {
+  if (error instanceof NotFoundError) {
+    console.log('One or more documents not found');
+    // No documents were updated (atomic operation)
+  }
+}
+```
+
+## Performance Considerations
+
+### Chunking
+
+```typescript
+// Automatically chunked into 4 batches (500 each + 250)
+const users = await userRepo.bulkCreate(
+  new Array(1750).fill(null).map((_, i) => ({
+    name: `User ${i}`,
+    email: `user${i}@example.com`,
+    status: 'active'
+  }))
+);
+
+console.log(`Created ${users.length} users in 4 batches`);
+```
+
+### Cost Analysis
+
+```typescript
+// Creating 1000 documents
+
+// Option 1: Individual creates
+for (let i = 0; i < 1000; i++) {
+  await userRepo.create(userData);
+}
+// Cost: 1000 writes + 1000 network round trips
+// Time: ~30-60 seconds
+
+// Option 2: Bulk create
+await userRepo.bulkCreate(arrayOf1000Users);
+// Cost: 1000 writes + 2 network round trips (2 batches)
+// Time: ~2-5 seconds
+```
+
+<Info>
+Bulk operations have the same write cost but significantly reduce network overhead.
+</Info>
+
+## Best Practices
+
+<Steps>
+  <Step title="Use Query Operations When Possible">
+    More efficient than fetching then bulk updating.
+    
+    ```typescript
+    // ✅ Better - single query + batched writes
+    await orderRepo.query()
+      .where('status', '==', 'pending')
+      .update({ status: 'shipped' });
+    
+    // ❌ Less efficient - fetch all then update
+    const orders = await orderRepo.query()
+      .where('status', '==', 'pending')
+      .get();
+    await orderRepo.bulkUpdate(
+      orders.map(o => ({ id: o.id, data: { status: 'shipped' } }))
+    );
+    ```
+  </Step>
+  
+  <Step title="Process Large Datasets in Batches">
+    Avoid loading everything into memory.
+    
+    ```typescript
+    // ✅ Process in batches
+    let cursor: string | undefined;
+    while (true) {
+      const { items, nextCursorId } = await repo.query()
+        .paginate(500, cursor);
+      if (items.length === 0) break;
+      
+      await processItems(items);
+      cursor = nextCursorId;
+      if (!cursor) break;
+    }
+    ```
+  </Step>
+  
+  <Step title="Add Timestamps">
+    Track when bulk operations occurred.
+    
+    ```typescript
+    const now = new Date().toISOString();
+    await userRepo.bulkUpdate(
+      users.map(u => ({
+        id: u.id,
+        data: { 
+          status: 'migrated',
+          migratedAt: now 
+        }
+      }))
+    );
+    ```
+  </Step>
+  
+  <Step title="Use Hooks for Side Effects">
+    Handle notifications and cleanup in hooks.
+    
+    ```typescript
+    userRepo.on('afterBulkCreate', async (users) => {
+      for (const user of users) {
+        await emailService.sendWelcome(user.email);
+      }
+    });
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="CRUD Operations" icon="database" href="/guides/crud-operations">
+    Learn individual create, update, and delete operations
+  </Card>
+  <Card title="Queries" icon="magnifying-glass" href="/guides/queries">
+    Build queries for bulk operations
+  </Card>
+  <Card title="Streaming" icon="water" href="/guides/streaming">
+    Process large datasets with streaming
+  </Card>
+  <Card title="Performance" icon="gauge" href="/best-practices/performance-costs">
+    Optimize bulk operation performance
+  </Card>
+</CardGroup>

@@ -1,0 +1,496 @@
+---
+title: Dot Notation
+description: Utilities for handling Firestore dot notation in nested object updates
+---
+
+The dot notation module provides utilities for working with Firestore's dot notation syntax, which allows updating nested fields without replacing entire objects.
+
+## Core Functions
+
+### isDotNotation
+
+Checks if a key uses dot notation syntax.
+
+```typescript
+function isDotNotation(key: string): boolean
+```
+
+#### Parameters
+
+<ParamField path="key" type="string" required>
+  The key to check for dot notation
+</ParamField>
+
+#### Returns
+
+<ResponseField name="boolean" type="boolean">
+  Returns `true` if the key contains a dot (`.`) character, `false` otherwise
+</ResponseField>
+
+#### Example
+
+```typescript
+import { isDotNotation } from '@spacelabs/firestoreorm/utils/dotNotation';
+
+isDotNotation('address.city');  // true
+isDotNotation('name');          // false
+isDotNotation('user.profile.bio'); // true
+```
+
+### hasDotNotationKeys
+
+Checks if an object contains any keys with dot notation.
+
+```typescript
+function hasDotNotationKeys(obj: Record<string, any>): boolean
+```
+
+#### Parameters
+
+<ParamField path="obj" type="Record<string, any>" required>
+  The object to check for dot notation keys
+</ParamField>
+
+#### Returns
+
+<ResponseField name="boolean" type="boolean">
+  Returns `true` if any key in the object uses dot notation, `false` otherwise
+</ResponseField>
+
+#### Example
+
+```typescript
+import { hasDotNotationKeys } from '@spacelabs/firestoreorm/utils/dotNotation';
+
+hasDotNotationKeys({
+  name: 'John',
+  'address.city': 'LA'
+});  // true
+
+hasDotNotationKeys({
+  name: 'John',
+  age: 30
+});  // false
+```
+
+## Conversion Functions
+
+### expandDotNotation
+
+Converts a flat object with dot notation keys into a nested object structure.
+
+```typescript
+function expandDotNotation<T = any>(
+  flatObj: Record<string, any>
+): T
+```
+
+#### Parameters
+
+<ParamField path="flatObj" type="Record<string, any>" required>
+  Object with dot notation keys to expand into nested structure
+</ParamField>
+
+#### Returns
+
+<ResponseField name="T" type="object">
+  Nested object structure with expanded dot notation paths
+</ResponseField>
+
+#### Example
+
+```typescript
+import { expandDotNotation } from '@spacelabs/firestoreorm/utils/dotNotation';
+
+const flat = {
+  'address.city': 'Los Angeles',
+  'address.zip': '90001',
+  'address.country': 'USA',
+  name: 'John Doe'
+};
+
+const nested = expandDotNotation(flat);
+// Result:
+// {
+//   address: {
+//     city: 'Los Angeles',
+//     zip: '90001',
+//     country: 'USA'
+//   },
+//   name: 'John Doe'
+// }
+```
+
+### flattenToDotNotation
+
+Converts a nested object into a flat object with dot notation keys.
+
+```typescript
+function flattenToDotNotation<T = any>(
+  obj: Record<string, any>,
+  prefix?: string
+): Record<string, any>
+```
+
+#### Parameters
+
+<ParamField path="obj" type="Record<string, any>" required>
+  Nested object to flatten into dot notation
+</ParamField>
+
+<ParamField path="prefix" type="string">
+  Internal prefix for recursion. Leave empty when calling directly.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="Record<string, any>" type="object">
+  Flat object with dot notation keys
+</ResponseField>
+
+#### Behavior
+
+- Only flattens plain objects
+- Preserves arrays, dates, and other special types as values
+- Does not flatten objects with custom prototypes
+
+#### Example
+
+```typescript
+import { flattenToDotNotation } from '@spacelabs/firestoreorm/utils/dotNotation';
+
+const nested = {
+  address: {
+    city: 'Los Angeles',
+    zip: '90001',
+    country: 'USA'
+  },
+  name: 'John Doe',
+  tags: ['customer', 'premium'],
+  createdAt: new Date('2024-01-01')
+};
+
+const flat = flattenToDotNotation(nested);
+// Result:
+// {
+//   'address.city': 'Los Angeles',
+//   'address.zip': '90001',
+//   'address.country': 'USA',
+//   name: 'John Doe',
+//   tags: ['customer', 'premium'],
+//   createdAt: Date(2024-01-01)
+// }
+```
+
+## Update Functions
+
+### mergeDotNotationUpdate
+
+Merges dot notation updates with existing data, handling both regular and dot notation keys.
+
+```typescript
+function mergeDotNotationUpdate(
+  existingData: Record<string, any>,
+  updates: Record<string, any>
+): Record<string, any>
+```
+
+#### Parameters
+
+<ParamField path="existingData" type="Record<string, any>" required>
+  Current document data
+</ParamField>
+
+<ParamField path="updates" type="Record<string, any>" required>
+  Updates to apply (may contain dot notation keys)
+</ParamField>
+
+#### Returns
+
+<ResponseField name="Record<string, any>" type="object">
+  Merged data structure with updates applied
+</ResponseField>
+
+#### Behavior
+
+- Skips undefined values (Firestore doesn't accept them)
+- Handles mixed regular and dot notation keys
+- Creates nested objects as needed
+- Preserves existing data not affected by updates
+
+#### Example
+
+```typescript
+import { mergeDotNotationUpdate } from '@spacelabs/firestoreorm/utils/dotNotation';
+
+const existing = {
+  name: 'John Doe',
+  address: {
+    city: 'New York',
+    zip: '10001',
+    country: 'USA'
+  },
+  age: 30
+};
+
+const updates = {
+  'address.city': 'Los Angeles',
+  'address.zip': '90001',
+  age: 31
+};
+
+const result = mergeDotNotationUpdate(existing, updates);
+// Result:
+// {
+//   name: 'John Doe',
+//   address: {
+//     city: 'Los Angeles',
+//     zip: '90001',
+//     country: 'USA'
+//   },
+//   age: 31
+// }
+```
+
+## Validation Functions
+
+### validateDotNotationPath
+
+Validates dot notation paths to prevent invalid field names.
+
+```typescript
+function validateDotNotationPath(key: string): void
+```
+
+#### Parameters
+
+<ParamField path="key" type="string" required>
+  The dot notation key to validate
+</ParamField>
+
+#### Throws
+
+Throws an Error if the key is invalid:
+- Empty or whitespace-only paths
+- Paths starting or ending with a dot
+- Paths with consecutive dots (empty parts)
+
+#### Example
+
+```typescript
+import { validateDotNotationPath } from '@spacelabs/firestoreorm/utils/dotNotation';
+
+// Valid paths
+validateDotNotationPath('address.city');     // OK
+validateDotNotationPath('user.profile.bio'); // OK
+validateDotNotationPath('name');             // OK
+
+// Invalid paths
+validateDotNotationPath('');                 // Error: cannot be empty
+validateDotNotationPath('.address.city');    // Error: cannot start with dot
+validateDotNotationPath('address.city.');    // Error: cannot end with dot
+validateDotNotationPath('address..city');    // Error: empty parts
+```
+
+## Utility Functions
+
+### getRootFields
+
+Extracts the root fields from an array of dot notation paths.
+
+```typescript
+function getRootFields(keys: string[]): string[]
+```
+
+#### Parameters
+
+<ParamField path="keys" type="string[]" required>
+  Array of keys (may include dot notation)
+</ParamField>
+
+#### Returns
+
+<ResponseField name="string[]" type="array">
+  Array of unique root field names
+</ResponseField>
+
+#### Example
+
+```typescript
+import { getRootFields } from '@spacelabs/firestoreorm/utils/dotNotation';
+
+const keys = [
+  'address.city',
+  'address.zip',
+  'address.country',
+  'name',
+  'profile.bio',
+  'profile.avatar'
+];
+
+const roots = getRootFields(keys);
+// Result: ['address', 'name', 'profile']
+```
+
+### getDotNotationDepth
+
+Gets the depth of a dot notation path.
+
+```typescript
+function getDotNotationDepth(key: string): number
+```
+
+#### Parameters
+
+<ParamField path="key" type="string" required>
+  The dot notation key
+</ParamField>
+
+#### Returns
+
+<ResponseField name="number" type="number">
+  The depth of the path (number of segments)
+</ResponseField>
+
+#### Example
+
+```typescript
+import { getDotNotationDepth } from '@spacelabs/firestoreorm/utils/dotNotation';
+
+getDotNotationDepth('name');                    // 1
+getDotNotationDepth('address.city');            // 2
+getDotNotationDepth('user.profile.settings.theme'); // 4
+```
+
+## Complete Usage Example
+
+```typescript
+import {
+  expandDotNotation,
+  flattenToDotNotation,
+  mergeDotNotationUpdate,
+  validateDotNotationPath,
+  getRootFields,
+  getDotNotationDepth
+} from '@spacelabs/firestoreorm/utils/dotNotation';
+
+// Updating nested fields with dot notation
+const userUpdate = {
+  'profile.bio': 'Software Engineer',
+  'profile.social.twitter': '@johndoe',
+  'settings.notifications.email': true
+};
+
+// Validate all paths
+for (const key of Object.keys(userUpdate)) {
+  validateDotNotationPath(key);
+}
+
+// Get affected root fields
+const affectedFields = getRootFields(Object.keys(userUpdate));
+console.log('Updating fields:', affectedFields);
+// ['profile', 'settings']
+
+// Expand to nested structure for local processing
+const expanded = expandDotNotation(userUpdate);
+console.log(expanded);
+// {
+//   profile: {
+//     bio: 'Software Engineer',
+//     social: { twitter: '@johndoe' }
+//   },
+//   settings: {
+//     notifications: { email: true }
+//   }
+// }
+
+// Merge with existing data
+const existingUser = {
+  name: 'John Doe',
+  email: 'john@example.com',
+  profile: {
+    bio: 'Developer',
+    avatar: 'avatar.jpg'
+  },
+  settings: {
+    theme: 'dark',
+    notifications: {
+      email: false,
+      push: true
+    }
+  }
+};
+
+const mergedUser = mergeDotNotationUpdate(existingUser, userUpdate);
+console.log(mergedUser);
+// {
+//   name: 'John Doe',
+//   email: 'john@example.com',
+//   profile: {
+//     bio: 'Software Engineer',
+//     avatar: 'avatar.jpg',
+//     social: { twitter: '@johndoe' }
+//   },
+//   settings: {
+//     theme: 'dark',
+//     notifications: {
+//       email: true,
+//       push: true
+//     }
+//   }
+// }
+
+// Flatten back to dot notation for Firestore
+const flattened = flattenToDotNotation(mergedUser);
+console.log(flattened);
+```
+
+## Use Cases
+
+### Partial Updates Without Overwriting
+
+```typescript
+// Without dot notation - overwrites entire address
+await userRepo.update(userId, {
+  address: { city: 'LA' }
+});
+// Result: { address: { city: 'LA' } } - zip and country are lost!
+
+// With dot notation - updates only city
+await userRepo.update(userId, {
+  'address.city': 'LA'
+});
+// Result: { address: { city: 'LA', zip: '90001', country: 'USA' } }
+```
+
+### Batch Updates on Nested Fields
+
+```typescript
+const settingsUpdates = {
+  'settings.theme': 'dark',
+  'settings.language': 'en',
+  'settings.notifications.email': true,
+  'settings.notifications.sms': false
+};
+
+await userRepo.update(userId, settingsUpdates);
+```
+
+### Working with Form Data
+
+```typescript
+// Form fields using dot notation
+const formData = {
+  'profile.firstName': req.body.firstName,
+  'profile.lastName': req.body.lastName,
+  'profile.bio': req.body.bio,
+  'settings.timezone': req.body.timezone
+};
+
+// Validate and update
+for (const key of Object.keys(formData)) {
+  validateDotNotationPath(key);
+}
+
+await userRepo.update(userId, formData);
+```

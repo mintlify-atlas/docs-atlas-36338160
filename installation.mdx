@@ -1,0 +1,277 @@
+---
+title: Installation
+description: Install FirestoreORM and configure your Firebase Admin SDK
+---
+
+# Installation
+
+Get started with FirestoreORM by installing the package and configuring Firebase Admin SDK.
+
+## Install the Package
+
+FirestoreORM supports npm, yarn, and pnpm. Choose your preferred package manager:
+
+<CodeGroup>
+
+```bash npm
+npm install @spacelabstech/firestoreorm firebase-admin zod
+```
+
+```bash yarn
+yarn add @spacelabstech/firestoreorm firebase-admin zod
+```
+
+```bash pnpm
+pnpm add @spacelabstech/firestoreorm firebase-admin zod
+```
+
+</CodeGroup>
+
+## Peer Dependencies
+
+FirestoreORM requires these peer dependencies:
+
+| Package | Version | Purpose |
+|---------|---------|----------|
+| `firebase-admin` | `^12.0.0 \|\| ^13.0.0` | Firebase Admin SDK for Firestore access |
+| `zod` | `^3.0.0 \|\| ^4.0.0` | Schema validation and type inference |
+
+<Note>
+Both peer dependencies are automatically installed when you install FirestoreORM.
+</Note>
+
+## System Requirements
+
+- **Node.js**: 16.0.0 or higher
+- **TypeScript**: 5.0+ (recommended for full type safety)
+
+## Firebase Setup
+
+### 1. Create a Firebase Project
+
+If you don't have a Firebase project yet:
+
+<Steps>
+  <Step title="Go to Firebase Console">
+    Visit [Firebase Console](https://console.firebase.google.com/) and click "Add project".
+  </Step>
+  <Step title="Create a Firestore Database">
+    In your project, navigate to Firestore Database and click "Create database". Choose production or test mode based on your needs.
+  </Step>
+  <Step title="Generate Service Account Key">
+    Go to Project Settings > Service Accounts > Generate New Private Key. Download the JSON file.
+  </Step>
+</Steps>
+
+<Warning>
+Keep your service account key secure. Never commit it to version control. Use environment variables or secret management services in production.
+</Warning>
+
+### 2. Initialize Firebase Admin
+
+Create a Firebase configuration file to initialize the Admin SDK:
+
+```typescript firebase.ts
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+
+// Initialize Firebase Admin with service account
+const app = initializeApp({
+  credential: cert('./serviceAccountKey.json')
+});
+
+// Get Firestore instance
+export const db = getFirestore(app);
+```
+
+<Tip>
+For better security in production, load credentials from environment variables:
+
+```typescript
+const app = initializeApp({
+  credential: cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+  })
+});
+```
+</Tip>
+
+### 3. Alternative: Using Application Default Credentials
+
+If you're running on Google Cloud Platform (Cloud Functions, Cloud Run, etc.), you can use Application Default Credentials:
+
+```typescript firebase.ts
+import { initializeApp, applicationDefault } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+
+const app = initializeApp({
+  credential: applicationDefault()
+});
+
+export const db = getFirestore(app);
+```
+
+## Project Structure
+
+Here's a recommended project structure for organizing your repositories and schemas:
+
+```bash
+project-root/
+├── src/
+│   ├── config/
+│   │   └── firebase.ts          # Firebase initialization
+│   ├── schemas/
+│   │   ├── user.schema.ts       # User Zod schema
+│   │   ├── order.schema.ts      # Order Zod schema
+│   │   └── index.ts             # Export all schemas
+│   ├── repositories/
+│   │   ├── user.repository.ts   # User repository
+│   │   ├── order.repository.ts  # Order repository
+│   │   └── index.ts             # Export all repositories
+│   └── index.ts
+├── serviceAccountKey.json       # Firebase credentials (gitignored)
+├── package.json
+└── tsconfig.json
+```
+
+## TypeScript Configuration
+
+Ensure your `tsconfig.json` is configured for ES modules and proper type checking:
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
+}
+```
+
+## Environment Variables
+
+Create a `.env` file for your Firebase credentials (and add it to `.gitignore`):
+
+```bash .env
+FIREBASE_PROJECT_ID=your-project-id
+FIREBASE_CLIENT_EMAIL=your-client-email@project.iam.gserviceaccount.com
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+```
+
+Load environment variables using `dotenv`:
+
+```bash
+npm install dotenv
+```
+
+```typescript
+import 'dotenv/config';
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+
+const app = initializeApp({
+  credential: cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+  })
+});
+
+export const db = getFirestore(app);
+```
+
+## Verification
+
+Verify your installation by creating a simple test:
+
+```typescript test.ts
+import { db } from './config/firebase';
+import { FirestoreRepository } from '@spacelabstech/firestoreorm';
+import { z } from 'zod';
+
+// Define a simple schema
+const testSchema = z.object({
+  id: z.string().optional(),
+  name: z.string(),
+  createdAt: z.string()
+});
+
+type TestDoc = z.infer<typeof testSchema>;
+
+// Create repository
+const testRepo = FirestoreRepository.withSchema<TestDoc>(
+  db,
+  'test',
+  testSchema
+);
+
+// Test create operation
+async function test() {
+  const doc = await testRepo.create({
+    name: 'Test Document',
+    createdAt: new Date().toISOString()
+  });
+  console.log('Created document:', doc.id);
+  
+  // Clean up
+  await testRepo.delete(doc.id);
+  console.log('Test successful!');
+}
+
+test().catch(console.error);
+```
+
+Run the test:
+
+```bash
+npx ts-node test.ts
+```
+
+If you see "Test successful!", your installation is complete!
+
+## Troubleshooting
+
+### Error: "Cannot find module 'firebase-admin'"
+
+Make sure you installed all dependencies:
+
+```bash
+npm install firebase-admin zod
+```
+
+### Error: "Credential implementation provided to initializeApp() is invalid"
+
+Check that:
+- Your service account key path is correct
+- The JSON file is valid
+- You're not accidentally committing a placeholder file
+
+### Error: "The caller does not have permission"
+
+Ensure your service account has the correct Firestore permissions in the Firebase Console under IAM & Admin.
+
+### TypeScript Errors
+
+If you see type errors, ensure you have TypeScript 5.0+ installed:
+
+```bash
+npm install --save-dev typescript@latest
+```
+
+## Next Steps
+
+Now that you have FirestoreORM installed, let's build your first repository:
+
+<Card title="Quick Start Guide" icon="bolt" href="/quickstart">
+  Learn how to define schemas, create repositories, and perform CRUD operations
+</Card>

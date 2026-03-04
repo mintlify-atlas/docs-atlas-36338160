@@ -1,0 +1,159 @@
+---
+title: Introduction
+description: A type-safe, feature-rich Firestore ORM built for the Firebase Admin SDK
+---
+
+# Introduction to FirestoreORM
+
+FirestoreORM is a type-safe, feature-rich ORM built specifically for Firebase Admin SDK. It's designed to make backend Firestore development actually enjoyable by eliminating boilerplate and providing powerful features out of the box.
+
+## What is FirestoreORM?
+
+FirestoreORM is a production-ready ORM that wraps the Firebase Admin SDK with a clean, intuitive API. It provides:
+
+- **Type-safe operations** with full TypeScript support
+- **Automatic schema validation** using Zod
+- **Built-in soft deletes** for data recovery
+- **Lifecycle hooks** for logging and side effects
+- **Powerful query builder** with pagination and streaming
+- **Transaction support** for atomic operations
+- **Subcollection management** for hierarchical data
+- **Dot notation updates** for nested fields
+
+## Why FirestoreORM?
+
+### The Problem
+
+If you've built a production Node.js application with Firestore, you know the pain points:
+
+- Writing the same boilerplate CRUD operations over and over
+- Managing soft deletes manually across every collection
+- Implementing pagination consistently
+- Dealing with Firestore's composite index errors at runtime
+- Validating data before writes without a clean pattern
+- No lifecycle hooks for logging, auditing, or side effects
+- Query builders that don't feel natural or type-safe
+
+### The Solution
+
+FirestoreORM solves these problems by providing:
+
+<CardGroup cols={2}>
+  <Card title="Type Safety" icon="shield-check">
+    Full TypeScript support with intelligent type inference. Catch errors at compile time, not runtime.
+  </Card>
+  <Card title="Zero Boilerplate" icon="code">
+    Common operations like CRUD, pagination, and soft deletes work out of the box.
+  </Card>
+  <Card title="Production Ready" icon="rocket">
+    Battle-tested features like transactions, bulk operations, and error handling.
+  </Card>
+  <Card title="Framework Agnostic" icon="puzzle-piece">
+    Works with Express, NestJS, Fastify, Next.js, or any Node.js environment.
+  </Card>
+</CardGroup>
+
+## Key Features
+
+### Built for Real Production Use
+
+**Type-Safe Everything**
+
+Full TypeScript support with intelligent inference ensures your data operations are type-safe from end to end.
+
+**Zod Validation**
+
+Schema validation integrates seamlessly with your data layer. Validation errors are caught before any Firestore write occurs.
+
+**Soft Deletes Built-In**
+
+Never lose data accidentally. Documents are marked with `deletedAt` timestamps instead of being permanently removed, allowing you to recover when needed.
+
+**Lifecycle Hooks**
+
+Add logging, analytics, or side effects without cluttering your business logic. Hooks run at specific points in the data lifecycle.
+
+**Powerful Query Builder**
+
+Intuitive, chainable queries with pagination, aggregation, and streaming support.
+
+**Transaction Support**
+
+ACID guarantees for critical operations with automatic rollback on failure.
+
+**Subcollection Support**
+
+Navigate document hierarchies naturally with full repository support for subcollections.
+
+**Dot Notation Updates**
+
+Update nested fields without replacing entire objects using Firestore's dot notation syntax.
+
+**Zero Vendor Lock-In**
+
+Built on Firebase Admin SDK; works with any Node.js framework or serverless platform.
+
+## Framework Compatibility
+
+FirestoreORM works seamlessly with:
+
+- Express.js
+- NestJS (with DTOs and dependency injection)
+- Fastify
+- Koa
+- Next.js API routes
+- Cloud Functions for Firebase
+- Google Cloud Functions
+- Any Node.js environment
+
+## Who Should Use This?
+
+FirestoreORM is perfect for:
+
+<Steps>
+  <Step title="Backend Developers">
+    Building Node.js APIs with Firestore who want to move fast without sacrificing code quality.
+  </Step>
+  <Step title="Startup Teams">
+    Shipping MVPs quickly with a solid data layer that scales as you grow.
+  </Step>
+  <Step title="Enterprise Applications">
+    Managing complex data models with validation, auditing, and transactional integrity.
+  </Step>
+  <Step title="Firebase Admin SDK Users">
+    Anyone working with the Firebase Admin SDK who wants a better developer experience.
+  </Step>
+</Steps>
+
+<Note>
+FirestoreORM is built specifically for **Firebase Admin SDK** (backend/server-side). If you're using the client-side Firebase SDK, this library won't work for your use case.
+</Note>
+
+## What Makes It Different?
+
+Unlike other Firestore ORMs:
+
+- **Not abandoned** - Actively maintained with regular updates
+- **Feature complete** - Includes soft deletes, hooks, transactions, and more
+- **Real-world patterns** - Designed for actual production use cases
+- **Minimal ceremony** - Simple API that doesn't get in your way
+- **Type-safe queries** - Leverages TypeScript for compile-time safety
+
+## The Story Behind FirestoreORM
+
+<Info>
+Created by Happy Banda (HBFL3Xx), who has been working with Firestore on the backend for years. This ORM is the tool he wished existed from day one - designed for developers who want to move fast without sacrificing code quality, type safety, or maintainability.
+</Info>
+
+## Next Steps
+
+Ready to get started?
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install FirestoreORM and set up your Firebase project
+  </Card>
+  <Card title="Quick Start" icon="bolt" href="/quickstart">
+    Build your first repository and perform CRUD operations
+  </Card>
+</CardGroup>

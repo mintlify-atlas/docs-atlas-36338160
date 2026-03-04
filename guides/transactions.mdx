@@ -1,0 +1,654 @@
+---
+title: 'Transactions'
+description: 'Ensure data consistency with atomic Firestore transactions'
+icon: 'lock'
+---
+
+Transactions ensure atomic operations across multiple documents. If any part of a transaction fails, all changes are rolled back automatically. This guide covers transaction patterns with FirestoreORM.
+
+## Understanding Transactions
+
+A transaction guarantees that a set of read and write operations either all succeed or all fail together. This is critical for operations that must maintain data consistency.
+
+### When to Use Transactions
+
+<CardGroup cols={2}>
+  <Card title="Perfect for Transactions" icon="check">
+    - Transferring balances between accounts
+    - Inventory management (decrement stock)
+    - Atomic counters and tallies
+    - Multi-document updates that must stay in sync
+  </Card>
+  
+  <Card title="Not Needed for Transactions" icon="xmark">
+    - Single document updates
+    - Independent operations
+    - Operations that can tolerate eventual consistency
+    - Large batch operations (use batched writes instead)
+  </Card>
+</CardGroup>
+
+## Basic Transaction
+
+### Transaction Structure
+
+All transactions follow this pattern:
+
+```typescript
+await repo.runInTransaction(async (tx, repo) => {
+  // 1. Read documents
+  const doc = await repo.getForUpdate(tx, documentId);
+  
+  // 2. Validate and compute new values
+  if (!doc) throw new Error('Document not found');
+  const newValue = doc.value + 1;
+  
+  // 3. Write updates
+  await repo.updateInTransaction(tx, documentId, { value: newValue });
+});
+```
+
+<Steps>
+  <Step title="Read Phase">
+    Use `getForUpdate()` to read documents within the transaction.
+  </Step>
+  <Step title="Compute Phase">
+    Validate data and calculate new values.
+  </Step>
+  <Step title="Write Phase">
+    Apply changes using transaction methods.
+  </Step>
+  <Step title="Commit">
+    Firestore commits all changes atomically when the function completes.
+  </Step>
+</Steps>
+
+### Simple Counter Example
+
+```typescript
+// Increment a counter atomically
+const newCount = await counterRepo.runInTransaction(async (tx, repo) => {
+  const counter = await repo.getForUpdate(tx, 'global-counter');
+  
+  const newValue = (counter?.value || 0) + 1;
+  
+  await repo.updateInTransaction(tx, 'global-counter', {
+    value: newValue,
+    updatedAt: new Date().toISOString()
+  });
+  
+  return newValue;
+});
+
+console.log(`New count: ${newCount}`);
+```
+
+## Reading in Transactions
+
+### Get For Update
+
+Always use `getForUpdate()` to read documents in transactions.
+
+```typescript
+await repo.runInTransaction(async (tx, repo) => {
+  // Read document for update
+  const user = await repo.getForUpdate(tx, 'user-123');
+  
+  if (!user) {
+    throw new Error('User not found');
+  }
+  
+  console.log(`Current balance: ${user.balance}`);
+});
+```
+
+### Read Multiple Documents
+
+```typescript
+await accountRepo.runInTransaction(async (tx, repo) => {
+  // Read both accounts
+  const from = await repo.getForUpdate(tx, 'account-1');
+  const to = await repo.getForUpdate(tx, 'account-2');
+  
+  if (!from || !to) {
+    throw new Error('Account not found');
+  }
+  
+  // Both reads are part of the same transaction
+});
+```
+
+### Include Deleted Documents
+
+```typescript
+await repo.runInTransaction(async (tx, repo) => {
+  // Include soft-deleted documents
+  const doc = await repo.getForUpdate(tx, docId, true);
+  
+  if (doc?.deletedAt) {
+    console.log('Document is soft-deleted');
+  }
+});
+```
+
+## Writing in Transactions
+
+### Update in Transaction
+
+Use `updateInTransaction()` to modify documents.
+
+```typescript
+await userRepo.runInTransaction(async (tx, repo) => {
+  const user = await repo.getForUpdate(tx, 'user-123');
+  
+  if (!user) {
+    throw new Error('User not found');
+  }
+  
+  // Update document
+  await repo.updateInTransaction(tx, user.id, {
+    loginCount: (user.loginCount || 0) + 1,
+    lastLogin: new Date().toISOString()
+  });
+});
+```
+
+### Create in Transaction
+
+Create new documents within a transaction.
+
+```typescript
+await orderRepo.runInTransaction(async (tx, repo) => {
+  const newOrder = await repo.createInTransaction(tx, {
+    userId: 'user-123',
+    total: 99.99,
+    status: 'pending',
+    createdAt: new Date().toISOString()
+  });
+  
+  console.log('Order created:', newOrder.id);
+  
+  return newOrder;
+});
+```
+
+### Delete in Transaction
+
+Permanently delete documents within a transaction.
+
+```typescript
+await productRepo.runInTransaction(async (tx, repo) => {
+  const product = await repo.getForUpdate(tx, 'product-123');
+  
+  if (product && product.stock === 0) {
+    await repo.deleteInTransaction(tx, product.id);
+    console.log('Out of stock product deleted');
+  }
+});
+```
+
+## Complex Transaction Examples
+
+### Bank Transfer
+
+Transfer money between two accounts atomically.
+
+```typescript
+interface Account {
+  id?: string;
+  userId: string;
+  balance: number;
+  currency: string;
+}
+
+class BankingService {
+  async transfer(
+    fromAccountId: string,
+    toAccountId: string,
+    amount: number
+  ) {
+    return await accountRepo.runInTransaction(async (tx, repo) => {
+      // Read both accounts
+      const from = await repo.getForUpdate(tx, fromAccountId);
+      const to = await repo.getForUpdate(tx, toAccountId);
+      
+      // Validate
+      if (!from) throw new Error('Source account not found');
+      if (!to) throw new Error('Destination account not found');
+      if (from.balance < amount) {
+        throw new Error('Insufficient funds');
+      }
+      if (from.currency !== to.currency) {
+        throw new Error('Currency mismatch');
+      }
+      
+      // Execute transfer
+      await repo.updateInTransaction(tx, fromAccountId, {
+        balance: from.balance - amount
+      });
+      
+      await repo.updateInTransaction(tx, toAccountId, {
+        balance: to.balance + amount
+      });
+      
+      return {
+        success: true,
+        fromBalance: from.balance - amount,
+        toBalance: to.balance + amount
+      };
+    });
+  }
+}
+```
+
+### Inventory Management
+
+Decrement inventory when an order is placed.
+
+```typescript
+class InventoryService {
+  async reserveStock(productId: string, quantity: number) {
+    return await productRepo.runInTransaction(async (tx, repo) => {
+      const product = await repo.getForUpdate(tx, productId);
+      
+      if (!product) {
+        throw new Error('Product not found');
+      }
+      
+      if (product.stock < quantity) {
+        throw new Error(
+          `Insufficient stock. Available: ${product.stock}, Requested: ${quantity}`
+        );
+      }
+      
+      await repo.updateInTransaction(tx, productId, {
+        stock: product.stock - quantity,
+        updatedAt: new Date().toISOString()
+      });
+      
+      return {
+        productId,
+        remainingStock: product.stock - quantity,
+        reserved: quantity
+      };
+    });
+  }
+  
+  async restoreStock(productId: string, quantity: number) {
+    return await productRepo.runInTransaction(async (tx, repo) => {
+      const product = await repo.getForUpdate(tx, productId);
+      
+      if (!product) {
+        throw new Error('Product not found');
+      }
+      
+      await repo.updateInTransaction(tx, productId, {
+        stock: product.stock + quantity,
+        updatedAt: new Date().toISOString()
+      });
+      
+      return product.stock + quantity;
+    });
+  }
+}
+```
+
+### Multi-Document Counter
+
+Update multiple counters atomically.
+
+```typescript
+class AnalyticsService {
+  async recordPageView(userId: string, pageId: string) {
+    await analyticsRepo.runInTransaction(async (tx, repo) => {
+      // Update global counter
+      const global = await repo.getForUpdate(tx, 'global-stats');
+      await repo.updateInTransaction(tx, 'global-stats', {
+        totalPageViews: (global?.totalPageViews || 0) + 1
+      });
+      
+      // Update user counter
+      const user = await repo.getForUpdate(tx, `user-${userId}`);
+      await repo.updateInTransaction(tx, `user-${userId}`, {
+        pageViews: (user?.pageViews || 0) + 1
+      });
+      
+      // Update page counter
+      const page = await repo.getForUpdate(tx, `page-${pageId}`);
+      await repo.updateInTransaction(tx, `page-${pageId}`, {
+        views: (page?.views || 0) + 1
+      });
+    });
+  }
+}
+```
+
+## Transactions with Dot Notation
+
+Update nested fields using dot notation in transactions.
+
+```typescript
+await userRepo.runInTransaction(async (tx, repo) => {
+  // Read the document first (REQUIRED for dot notation)
+  const user = await repo.getForUpdate(tx, 'user-123');
+  
+  if (!user) {
+    throw new Error('User not found');
+  }
+  
+  // Update nested fields - pass existing data as third parameter
+  await repo.updateInTransaction(
+    tx,
+    'user-123',
+    {
+      'settings.theme': 'dark',
+      'profile.lastLogin': new Date().toISOString(),
+      'stats.loginCount': (user.stats?.loginCount || 0) + 1
+    } as any,
+    user // existingData required for dot notation
+  );
+});
+```
+
+<Warning>
+When using dot notation in transactions, you **must** pass the existing document data as the third parameter to `updateInTransaction()`. This is required because dot notation needs to merge with existing data.
+</Warning>
+
+## Error Handling and Rollback
+
+### Automatic Rollback
+
+If any error is thrown, all changes are automatically rolled back.
+
+```typescript
+try {
+  await accountRepo.runInTransaction(async (tx, repo) => {
+    const account = await repo.getForUpdate(tx, 'account-1');
+    
+    await repo.updateInTransaction(tx, 'account-1', {
+      balance: account.balance - 100
+    });
+    
+    // Simulate error
+    if (Math.random() > 0.5) {
+      throw new Error('Transaction failed');
+    }
+    
+    await repo.updateInTransaction(tx, 'account-2', {
+      balance: account.balance + 100
+    });
+  });
+} catch (error) {
+  console.log('Transaction rolled back:', error.message);
+  // Account balances remain unchanged
+}
+```
+
+### Validation Errors
+
+```typescript
+await userRepo.runInTransaction(async (tx, repo) => {
+  const user = await repo.getForUpdate(tx, userId);
+  
+  // Validate before making changes
+  if (user.status === 'suspended') {
+    throw new Error('Cannot update suspended user');
+  }
+  
+  if (user.balance < withdrawAmount) {
+    throw new Error('Insufficient balance');
+  }
+  
+  // Proceed with update
+  await repo.updateInTransaction(tx, userId, {
+    balance: user.balance - withdrawAmount
+  });
+});
+```
+
+### Retry on Contention
+
+Firestore automatically retries transactions on write conflicts, but you can implement custom retry logic.
+
+```typescript
+class TransactionHelper {
+  static async withRetry<T>(
+    fn: () => Promise<T>,
+    maxRetries: number = 3
+  ): Promise<T> {
+    let lastError: Error;
+    
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error as Error;
+        
+        if (error.code !== 'aborted') {
+          throw error; // Not a retry-able error
+        }
+        
+        // Wait before retry (exponential backoff)
+        await new Promise(resolve => 
+          setTimeout(resolve, Math.pow(2, i) * 100)
+        );
+      }
+    }
+    
+    throw lastError!;
+  }
+}
+
+// Usage
+const result = await TransactionHelper.withRetry(async () => {
+  return await accountRepo.runInTransaction(async (tx, repo) => {
+    // Transaction logic
+  });
+});
+```
+
+## Transaction Limitations
+
+### Lifecycle Hooks
+
+<Warning>
+Only `before*` hooks execute in transactions. `after*` hooks do NOT run because transactions must be atomic and cannot have side effects that might fail.
+</Warning>
+
+```typescript
+// ✅ WORKS - beforeUpdate runs before transaction commits
+userRepo.on('beforeUpdate', (data) => {
+  if (data.balance < 0) {
+    throw new Error('Balance cannot be negative');
+  }
+});
+
+// ❌ DOES NOT WORK - afterUpdate won't run in transaction
+userRepo.on('afterUpdate', async (user) => {
+  await sendEmail(user.email); // This will NOT execute
+});
+```
+
+**Solution**: Run side effects after the transaction completes.
+
+```typescript
+const result = await accountRepo.runInTransaction(async (tx, repo) => {
+  // ... transaction logic
+  return { from, to };
+});
+
+// Run side effects AFTER transaction succeeds
+await auditLog.record('transfer_completed', result);
+await sendEmail(result.from.email);
+```
+
+### Size Limits
+
+<Info>
+Firestore transactions have a maximum size of 10 MiB (total size of all documents read and written).
+</Info>
+
+```typescript
+// ❌ Bad - might exceed transaction size limit
+await repo.runInTransaction(async (tx, repo) => {
+  for (let i = 0; i < 1000; i++) {
+    const doc = await repo.getForUpdate(tx, `doc-${i}`);
+    await repo.updateInTransaction(tx, `doc-${i}`, { processed: true });
+  }
+});
+
+// ✅ Good - use batched writes for large operations
+const updates = [];
+for (let i = 0; i < 1000; i++) {
+  updates.push({ id: `doc-${i}`, data: { processed: true } });
+}
+await repo.bulkUpdate(updates);
+```
+
+### Read-Before-Write Requirement
+
+<Warning>
+You must read a document with `getForUpdate()` before updating it in a transaction.
+</Warning>
+
+```typescript
+// ❌ Wrong - will throw error
+await repo.runInTransaction(async (tx, repo) => {
+  await repo.updateInTransaction(tx, docId, { value: 10 });
+});
+
+// ✅ Correct - read first
+await repo.runInTransaction(async (tx, repo) => {
+  const doc = await repo.getForUpdate(tx, docId);
+  await repo.updateInTransaction(tx, docId, { value: 10 });
+});
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Keep Transactions Short">
+    Minimize the time between read and commit to reduce contention.
+    
+    ```typescript
+    // ✅ Good - quick transaction
+    await repo.runInTransaction(async (tx, repo) => {
+      const doc = await repo.getForUpdate(tx, id);
+      await repo.updateInTransaction(tx, id, { count: doc.count + 1 });
+    });
+    
+    // ❌ Bad - external API call in transaction
+    await repo.runInTransaction(async (tx, repo) => {
+      const doc = await repo.getForUpdate(tx, id);
+      const result = await externalAPI.validate(doc); // Slow!
+      await repo.updateInTransaction(tx, id, { validated: result });
+    });
+    ```
+  </Step>
+  
+  <Step title="Read All Documents First">
+    Complete all reads before starting writes.
+    
+    ```typescript
+    // ✅ Good - all reads first
+    await repo.runInTransaction(async (tx, repo) => {
+      const doc1 = await repo.getForUpdate(tx, 'id1');
+      const doc2 = await repo.getForUpdate(tx, 'id2');
+      
+      await repo.updateInTransaction(tx, 'id1', { value: 1 });
+      await repo.updateInTransaction(tx, 'id2', { value: 2 });
+    });
+    ```
+  </Step>
+  
+  <Step title="Validate Before Writing">
+    Check all conditions before making any changes.
+    
+    ```typescript
+    await accountRepo.runInTransaction(async (tx, repo) => {
+      const from = await repo.getForUpdate(tx, fromId);
+      const to = await repo.getForUpdate(tx, toId);
+      
+      // Validate everything first
+      if (!from || !to) throw new Error('Account not found');
+      if (from.balance < amount) throw new Error('Insufficient funds');
+      if (from.currency !== to.currency) throw new Error('Currency mismatch');
+      
+      // Now safe to proceed
+      await repo.updateInTransaction(tx, fromId, { balance: from.balance - amount });
+      await repo.updateInTransaction(tx, toId, { balance: to.balance + amount });
+    });
+    ```
+  </Step>
+  
+  <Step title="Return Useful Results">
+    Return computed values from transactions.
+    
+    ```typescript
+    const result = await repo.runInTransaction(async (tx, repo) => {
+      const counter = await repo.getForUpdate(tx, 'counter');
+      const newValue = (counter?.value || 0) + 1;
+      
+      await repo.updateInTransaction(tx, 'counter', { value: newValue });
+      
+      return { oldValue: counter?.value || 0, newValue };
+    });
+    
+    console.log(`Updated from ${result.oldValue} to ${result.newValue}`);
+    ```
+  </Step>
+</Steps>
+
+## Performance Considerations
+
+### Transaction Cost
+
+```typescript
+// Transaction reading 2 docs, updating 2 docs
+await accountRepo.runInTransaction(async (tx, repo) => {
+  const from = await repo.getForUpdate(tx, 'acc-1');
+  const to = await repo.getForUpdate(tx, 'acc-2');
+  
+  await repo.updateInTransaction(tx, 'acc-1', { balance: from.balance - 100 });
+  await repo.updateInTransaction(tx, 'acc-2', { balance: to.balance + 100 });
+});
+// Cost: 2 reads + 2 writes
+```
+
+### Contention and Retries
+
+If two transactions try to modify the same document simultaneously, Firestore automatically retries the losing transaction.
+
+```typescript
+// High contention - frequent retries
+for (let i = 0; i < 100; i++) {
+  promises.push(
+    counterRepo.runInTransaction(async (tx, repo) => {
+      const counter = await repo.getForUpdate(tx, 'global');
+      await repo.updateInTransaction(tx, 'global', { 
+        value: counter.value + 1 
+      });
+    })
+  );
+}
+await Promise.all(promises); // Many retries!
+
+// Better: Use distributed counters for high-write scenarios
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Bulk Operations" icon="layer-group" href="/guides/bulk-operations">
+    Learn when to use batched writes instead of transactions
+  </Card>
+  <Card title="Dot Notation" icon="circle-dot" href="/guides/dot-notation">
+    Update nested fields in transactions
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/best-practices/error-handling">
+    Handle Firestore errors gracefully
+  </Card>
+  <Card title="Performance" icon="gauge" href="/best-practices/performance-costs">
+    Optimize transaction performance
+  </Card>
+</CardGroup>

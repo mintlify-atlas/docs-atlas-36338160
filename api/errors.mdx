@@ -1,0 +1,589 @@
+---
+title: 'Errors'
+description: 'Error classes and error handling in Spacelabs FirestoreORM'
+---
+
+## Error Classes
+
+Spacelab FirestoreORM provides specialized error classes to help you handle different failure scenarios. All errors extend the native JavaScript `Error` class.
+
+---
+
+## NotFoundError
+
+Thrown when a requested document does not exist in Firestore.
+
+```typescript
+class NotFoundError extends Error {
+  name: 'NotFoundError';
+}
+```
+
+<ResponseField name="NotFoundError" type="Error">
+  Error thrown when a document cannot be found during read, update, or delete operations.
+</ResponseField>
+
+### When It's Thrown
+
+<ParamField body="getById" type="method">
+  Never throws NotFoundError. Returns `null` instead when document doesn't exist.
+</ParamField>
+
+<ParamField body="update" type="method">
+  Throws when trying to update a document that doesn't exist.
+</ParamField>
+
+<ParamField body="delete" type="method">
+  Throws when trying to delete a document that doesn't exist.
+</ParamField>
+
+<ParamField body="softDelete" type="method">
+  Throws when trying to soft delete a document that doesn't exist.
+</ParamField>
+
+<ParamField body="restore" type="method">
+  Throws when trying to restore a document that doesn't exist.
+</ParamField>
+
+<ParamField body="bulkUpdate" type="method">
+  Throws when any document in the batch doesn't exist.
+</ParamField>
+
+<ParamField body="deleteInTransaction" type="method">
+  Throws when trying to delete a document in a transaction that doesn't exist.
+</ParamField>
+
+### How to Handle
+
+```typescript
+try {
+  await userRepo.update('user-123', { name: 'John Doe' });
+} catch (error) {
+  if (error instanceof NotFoundError) {
+    console.log('User not found');
+    // Option 1: Create the user instead
+    await userRepo.create({ id: 'user-123', name: 'John Doe' });
+    
+    // Option 2: Use upsert to handle both cases
+    await userRepo.upsert('user-123', { name: 'John Doe' });
+  }
+}
+```
+
+**Best Practice:**
+
+For operations where you're unsure if a document exists:
+- Use `getById()` first to check existence (returns `null` if not found)
+- Use `upsert()` for create-or-update scenarios
+- Use `bulkUpdate()` only when you're certain all documents exist
+
+---
+
+## ValidationError
+
+Thrown when Zod schema validation fails during create or update operations.
+
+```typescript
+class ValidationError extends Error {
+  name: 'ValidationError';
+  message: string; // Formatted error message
+  issues: z.ZodIssue[]; // Detailed validation issues
+}
+```
+
+<ResponseField name="ValidationError" type="Error">
+  Error thrown when document data fails Zod schema validation.
+  
+  <ResponseField name="message" type="string">
+    Human-readable error message combining all validation issues. Format: `"field.path: error message, field2: error message"`
+  </ResponseField>
+  
+  <ResponseField name="issues" type="z.ZodIssue[]">
+    Array of detailed Zod validation issues. Each issue contains:
+    - `path`: Array representing the field path (e.g., `['email']` or `['address', 'city']`)
+    - `message`: Error message for this specific field
+    - `code`: Zod error code (e.g., `'invalid_type'`, `'too_small'`, `'invalid_string'`)
+  </ResponseField>
+</ResponseField>
+
+### When It's Thrown
+
+<ParamField body="create" type="method">
+  Throws when document data fails create schema validation.
+</ParamField>
+
+<ParamField body="bulkCreate" type="method">
+  Throws when any document in the batch fails validation.
+</ParamField>
+
+<ParamField body="update" type="method">
+  Throws when update data fails partial schema validation.
+</ParamField>
+
+<ParamField body="bulkUpdate" type="method">
+  Throws when any update in the batch fails validation.
+</ParamField>
+
+<ParamField body="upsert" type="method">
+  Throws when data fails validation for create or update.
+</ParamField>
+
+<ParamField body="createInTransaction" type="method">
+  Throws when document data fails validation in a transaction.
+</ParamField>
+
+<ParamField body="updateInTransaction" type="method">
+  Throws when update data fails validation in a transaction.
+</ParamField>
+
+### How to Handle
+
+```typescript
+import { ValidationError } from '@spacelabs/firestore-orm';
+import { z } from 'zod';
+
+const userSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+  email: z.string().email('Invalid email address'),
+  age: z.number().int().positive('Age must be positive').optional()
+});
+
+const userRepo = FirestoreRepository.withSchema<User>(db, 'users', userSchema);
+
+try {
+  await userRepo.create({
+    name: '',
+    email: 'invalid-email',
+    age: -5
+  });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.log('Validation failed:', error.message);
+    // Output: "name: Name is required, email: Invalid email address, age: Age must be positive"
+    
+    // Access individual issues
+    error.issues.forEach(issue => {
+      console.log(`Field: ${issue.path.join('.')}`);
+      console.log(`Error: ${issue.message}`);
+    });
+    
+    // Return formatted errors to client
+    return {
+      error: 'Validation failed',
+      fields: error.issues.map(issue => ({
+        field: issue.path.join('.'),
+        message: issue.message
+      }))
+    };
+  }
+}
+```
+
+**Example Output:**
+
+```json
+{
+  "error": "Validation failed",
+  "fields": [
+    { "field": "name", "message": "Name is required" },
+    { "field": "email", "message": "Invalid email address" },
+    { "field": "age", "message": "Age must be positive" }
+  ]
+}
+```
+
+**Best Practice:**
+
+- Define clear, user-friendly error messages in your Zod schemas
+- Always validate on both client and server side
+- Return structured validation errors to the client for form field highlighting
+- Use custom Zod refinements for complex business logic validation
+
+---
+
+## ConflictError
+
+Thrown when an operation conflicts with existing data or business rules.
+
+```typescript
+class ConflictError extends Error {
+  name: 'ConflictError';
+}
+```
+
+<ResponseField name="ConflictError" type="Error">
+  Error thrown when an operation violates uniqueness constraints or business rules. This is a custom error you throw in your application code.
+</ResponseField>
+
+### When to Use
+
+The ORM doesn't throw this automatically. Use it in your application code for:
+
+<ParamField body="Uniqueness constraints" type="use case">
+  When enforcing unique fields like email, username, or SKU.
+</ParamField>
+
+<ParamField body="Business rules" type="use case">
+  When an operation violates domain-specific rules.
+</ParamField>
+
+<ParamField body="State conflicts" type="use case">
+  When a document is in the wrong state for an operation.
+</ParamField>
+
+### How to Use
+
+```typescript
+import { ConflictError } from '@spacelabs/firestore-orm';
+
+// Example 1: Enforce unique email
+async function createUser(email: string, name: string) {
+  const existing = await userRepo.findByField('email', email);
+  
+  if (existing.length > 0) {
+    throw new ConflictError(`User with email ${email} already exists`);
+  }
+  
+  return await userRepo.create({ email, name });
+}
+
+// Example 2: Enforce unique SKU
+async function createProduct(data: Product) {
+  const existingSku = await productRepo.query()
+    .where('sku', '==', data.sku)
+    .getOne();
+  
+  if (existingSku) {
+    throw new ConflictError(`Product with SKU ${data.sku} already exists`);
+  }
+  
+  return await productRepo.create(data);
+}
+
+// Example 3: Business rule validation
+async function shipOrder(orderId: string) {
+  const order = await orderRepo.getById(orderId);
+  
+  if (!order) {
+    throw new NotFoundError(`Order ${orderId} not found`);
+  }
+  
+  if (order.status === 'cancelled') {
+    throw new ConflictError('Cannot ship a cancelled order');
+  }
+  
+  if (order.status === 'shipped') {
+    throw new ConflictError('Order has already been shipped');
+  }
+  
+  return await orderRepo.update(orderId, { 
+    status: 'shipped',
+    shippedAt: new Date().toISOString()
+  });
+}
+
+// Handle in your API
+try {
+  await createUser('john@example.com', 'John Doe');
+} catch (error) {
+  if (error instanceof ConflictError) {
+    return res.status(409).json({ error: error.message });
+  }
+  throw error;
+}
+```
+
+**Best Practice:**
+
+- Use lifecycle hooks to enforce constraints across your application
+- Return appropriate HTTP status codes (409 Conflict)
+- Provide clear error messages that explain what constraint was violated
+- Consider using transactions for complex uniqueness checks
+
+---
+
+## FirestoreIndexError
+
+Thrown when a query requires a composite index that doesn't exist yet.
+
+```typescript
+class FirestoreIndexError extends Error {
+  name: 'FirestoreIndexError';
+  indexUrl: string;
+  fields: string[];
+  toString(): string;
+}
+```
+
+<ResponseField name="FirestoreIndexError" type="Error">
+  Error thrown when executing a query that requires a Firestore composite index.
+  
+  <ResponseField name="indexUrl" type="string">
+    Direct URL to create the required index in Firebase Console. Click this link to automatically configure the index.
+  </ResponseField>
+  
+  <ResponseField name="fields" type="string[]">
+    Array of field names that need to be indexed together.
+  </ResponseField>
+  
+  <ResponseField name="toString" type="() => string">
+    Returns a formatted, user-friendly error message with instructions and the index creation URL.
+  </ResponseField>
+</ResponseField>
+
+### When It's Thrown
+
+<ParamField body="Complex queries" type="scenario">
+  Queries with multiple where clauses on different fields.
+</ParamField>
+
+<ParamField body="Range + equality" type="scenario">
+  Queries combining range operators (`<`, `>`, `<=`, `>=`) with equality filters.
+</ParamField>
+
+<ParamField body="orderBy + where" type="scenario">
+  Queries using `orderBy()` on a field different from where clauses.
+</ParamField>
+
+<ParamField body="Array operations + filters" type="scenario">
+  Queries using `array-contains` with additional filters.
+</ParamField>
+
+### How to Handle
+
+```typescript
+import { FirestoreIndexError } from '@spacelabs/firestore-orm';
+
+try {
+  // Complex query requiring an index
+  const results = await userRepo.query()
+    .where('status', '==', 'active')
+    .where('createdAt', '>', yesterday)
+    .orderBy('createdAt', 'desc')
+    .get();
+} catch (error) {
+  if (error instanceof FirestoreIndexError) {
+    // Option 1: Pretty-print the error with instructions
+    console.log(error.toString());
+    
+    // Option 2: Access the data programmatically
+    console.log('Required fields:', error.fields);
+    console.log('Create index at:', error.indexUrl);
+    
+    // Option 3: In development, auto-open the URL
+    if (process.env.NODE_ENV === 'development') {
+      console.log('\n🔗 Click to create index:', error.indexUrl);
+    }
+  }
+}
+```
+
+**Error Output Example:**
+
+```
+╔════════════════════════════════════════════════════════════════╗
+║           FIRESTORE INDEX REQUIRED                             ║
+╚════════════════════════════════════════════════════════════════╝
+
+Your query requires a composite index that doesn't exist yet.
+
+Fields requiring index: status, createdAt
+
+To fix this:
+1. Click the link below to create the index automatically
+2. Wait 1-2 minutes for the index to build
+3. Run your query again
+
+Create Index: https://console.firebase.google.com/v1/r/project/.../firestore/indexes?create_composite=...
+
+Note: This is a one-time setup per query pattern.
+```
+
+**Best Practice:**
+
+1. **Development**: Keep the error visible so developers know to create the index
+2. **Testing**: Pre-create all indexes before deploying to production
+3. **CI/CD**: Export indexes with `firebase firestore:indexes` and version control them
+4. **Documentation**: Document which queries require indexes in your codebase
+
+```bash
+# Export your indexes to version control
+firebase firestore:indexes > firestore.indexes.json
+
+# Deploy indexes to production
+firebase deploy --only firestore:indexes
+```
+
+---
+
+## Generic Firestore Errors
+
+The ORM automatically parses and re-throws Firestore errors with helpful context using `parseFirestoreError()`. Common Firestore errors include:
+
+### Permission Denied
+
+```typescript
+// Firestore Security Rules blocked the operation
+try {
+  await userRepo.getById('protected-doc');
+} catch (error) {
+  // error.code === 'permission-denied'
+  console.log('Access denied by security rules');
+}
+```
+
+### Deadline Exceeded
+
+```typescript
+// Operation took too long (timeout)
+try {
+  await userRepo.query().get();
+} catch (error) {
+  // error.code === 'deadline-exceeded'
+  console.log('Request timeout - try limiting results');
+}
+```
+
+### Invalid Argument
+
+```typescript
+// Invalid field path or query constraint
+try {
+  await userRepo.query()
+    .where('', '==', 'value') // Empty field name
+    .get();
+} catch (error) {
+  // error.code === 'invalid-argument'
+  console.log('Invalid query parameter');
+}
+```
+
+---
+
+## Error Handling Best Practices
+
+### 1. Specific Error Handling
+
+Handle different errors appropriately:
+
+```typescript
+import { 
+  NotFoundError, 
+  ValidationError, 
+  ConflictError,
+  FirestoreIndexError 
+} from '@spacelabs/firestore-orm';
+
+async function updateUser(id: string, data: Partial<User>) {
+  try {
+    return await userRepo.update(id, data);
+  } catch (error) {
+    if (error instanceof NotFoundError) {
+      // 404 Not Found
+      return { status: 404, error: 'User not found' };
+    }
+    
+    if (error instanceof ValidationError) {
+      // 400 Bad Request
+      return { 
+        status: 400, 
+        error: 'Validation failed',
+        fields: error.issues.map(i => ({
+          field: i.path.join('.'),
+          message: i.message
+        }))
+      };
+    }
+    
+    if (error instanceof ConflictError) {
+      // 409 Conflict
+      return { status: 409, error: error.message };
+    }
+    
+    if (error instanceof FirestoreIndexError) {
+      // 500 Internal Server Error (log for developer)
+      console.error('Index required:', error.toString());
+      return { status: 500, error: 'Database configuration error' };
+    }
+    
+    // Unknown error
+    console.error('Unexpected error:', error);
+    return { status: 500, error: 'Internal server error' };
+  }
+}
+```
+
+### 2. Use Lifecycle Hooks for Validation
+
+Enforce constraints application-wide:
+
+```typescript
+// Enforce unique email using hooks
+userRepo.on('beforeCreate', async (user) => {
+  const existing = await userRepo.findByField('email', user.email);
+  if (existing.length > 0) {
+    throw new ConflictError(`Email ${user.email} is already registered`);
+  }
+});
+
+// Now all create operations are protected
+try {
+  await userRepo.create({ email: 'existing@example.com', name: 'John' });
+} catch (error) {
+  if (error instanceof ConflictError) {
+    console.log('Email already exists');
+  }
+}
+```
+
+### 3. Transaction Error Handling
+
+Transactions automatically retry on conflicts:
+
+```typescript
+try {
+  await accountRepo.runInTransaction(async (tx, repo) => {
+    const account = await repo.getForUpdate(tx, 'account-123');
+    
+    if (!account) {
+      throw new NotFoundError('Account not found');
+    }
+    
+    if (account.balance < amount) {
+      throw new ConflictError('Insufficient funds');
+    }
+    
+    await repo.updateInTransaction(tx, account.id, {
+      balance: account.balance - amount
+    });
+  });
+} catch (error) {
+  if (error instanceof NotFoundError) {
+    console.log('Account does not exist');
+  } else if (error instanceof ConflictError) {
+    console.log('Transaction failed:', error.message);
+  }
+}
+```
+
+### 4. Logging and Monitoring
+
+Log errors with context:
+
+```typescript
+import { Logger } from './logger';
+
+try {
+  await userRepo.update(userId, data);
+} catch (error) {
+  Logger.error('User update failed', {
+    userId,
+    data,
+    error: error instanceof Error ? error.message : error,
+    errorType: error.constructor.name,
+    stack: error instanceof Error ? error.stack : undefined
+  });
+  
+  throw error; // Re-throw after logging
+}
+```

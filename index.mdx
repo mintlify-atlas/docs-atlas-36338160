@@ -1,97 +1,193 @@
----
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
----
+<div className="bg-[#020627] dark:bg-[#020627]">
+  <div className="py-20 px-6 sm:px-8 lg:px-12">
+    <div className="max-w-7xl mx-auto">
+      <div className="text-center">
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white mb-6">
+          Type-Safe Firestore ORM for Node.js
+        </h1>
+        <p className="text-lg sm:text-xl text-gray-300 dark:text-gray-300 max-w-3xl mx-auto mb-10">
+          Build production-ready Firestore applications with validation, soft deletes, lifecycle hooks, and a powerful query builder. Designed for Firebase Admin SDK with full TypeScript support.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-4 justify-center items-center flex-wrap">
+          <a
+            href="/quickstart"
+            className="bg-[#238636] hover:bg-[#2ea043] text-white font-semibold py-3 px-8 rounded-lg transition-colors no-underline"
+          >
+            Get Started
+          </a>
+          <a
+            href="/api/firestore-repository"
+            className="bg-transparent hover:bg-white/10 text-white font-semibold py-3 px-8 rounded-lg border border-white/30 transition-colors no-underline"
+          >
+            View API Reference
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-## Setting up
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+    Quick start
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Get up and running with FirestoreORM in minutes
+  </p>
+  
+  <Steps>
+    <Step title="Install the package">
+      Install FirestoreORM along with its peer dependencies using your preferred package manager.
+      
+      <CodeGroup>
+      ```bash npm
+      npm install @spacelabstech/firestoreorm firebase-admin zod
+      ```
+      ```bash yarn
+      yarn add @spacelabstech/firestoreorm firebase-admin zod
+      ```
+      ```bash pnpm
+      pnpm add @spacelabstech/firestoreorm firebase-admin zod
+      ```
+      </CodeGroup>
+    </Step>
+    
+    <Step title="Define your schema">
+      Create a Zod schema for type-safe validation and TypeScript inference.
+      
+      ```typescript
+      import { z } from 'zod';
+      
+      export const userSchema = z.object({
+        id: z.string().optional(),
+        name: z.string().min(1, 'Name is required'),
+        email: z.string().email('Invalid email address'),
+        status: z.enum(['active', 'inactive']).default('active'),
+        createdAt: z.string().datetime(),
+        updatedAt: z.string().datetime()
+      });
+      
+      export type User = z.infer<typeof userSchema>;
+      ```
+    </Step>
+    
+    <Step title="Create a repository">
+      Initialize Firebase Admin and create a repository instance.
+      
+      ```typescript
+      import { initializeApp, cert } from 'firebase-admin/app';
+      import { getFirestore } from 'firebase-admin/firestore';
+      import { FirestoreRepository } from '@spacelabstech/firestoreorm';
+      
+      const app = initializeApp({
+        credential: cert('./serviceAccountKey.json')
+      });
+      
+      const db = getFirestore(app);
+      
+      export const userRepo = FirestoreRepository.withSchema<User>(
+        db,
+        'users',
+        userSchema
+      );
+      ```
+    </Step>
+    
+    <Step title="Start building">
+      Use the repository to perform CRUD operations with full type safety.
+      
+      ```typescript
+      // Create a user
+      const user = await userRepo.create({
+        name: 'John Doe',
+        email: 'john@example.com',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      
+      // Query users
+      const activeUsers = await userRepo.query()
+        .where('status', '==', 'active')
+        .orderBy('createdAt', 'desc')
+        .limit(10)
+        .get();
+      ```
+      
+      <Info>
+        Learn more in the [quickstart guide](/quickstart) or explore the [API reference](/api/firestore-repository).
+      </Info>
+    </Step>
+  </Steps>
+</div>
 
-Get your documentation site up and running in minutes.
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+    Core features
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Everything you need to build production-ready Firestore applications
+  </p>
+  
+  <CardGroup cols={3}>
+    <Card title="Type-safe" icon="shield-check" href="/concepts/schema-validation">
+      Full TypeScript support with Zod validation ensures your data is always correct
+    </Card>
+    <Card title="Soft deletes" icon="trash-arrow-up" href="/concepts/soft-deletes">
+      Never lose data accidentally with built-in soft delete functionality
+    </Card>
+    <Card title="Lifecycle hooks" icon="webhook" href="/concepts/lifecycle-hooks">
+      Add custom logic at any point in the data lifecycle without cluttering your code
+    </Card>
+    <Card title="Query builder" icon="magnifying-glass" href="/guides/queries">
+      Intuitive, chainable queries with pagination, aggregation, and streaming
+    </Card>
+    <Card title="Transactions" icon="lock" href="/guides/transactions">
+      ACID guarantees for critical operations with full transaction support
+    </Card>
+    <Card title="Bulk operations" icon="layer-group" href="/guides/bulk-operations">
+      Efficient batch writes with automatic chunking for large datasets
+    </Card>
+  </CardGroup>
+</div>
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+    Explore documentation
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Deep dive into concepts, guides, and API reference
+  </p>
+  
+  <CardGroup cols={2}>
+    <Card title="Core concepts" icon="book-open" href="/concepts/repository-pattern">
+      Learn the fundamentals of the repository pattern, validation, and hooks
+    </Card>
+    <Card title="Guides" icon="map" href="/guides/crud-operations">
+      Step-by-step guides for common operations and advanced patterns
+    </Card>
+    <Card title="Framework integration" icon="puzzle-piece" href="/frameworks/express">
+      Integrate with Express, NestJS, and other Node.js frameworks
+    </Card>
+    <Card title="API reference" icon="code" href="/api/firestore-repository">
+      Complete API documentation with all methods and parameters
+    </Card>
+  </CardGroup>
+</div>
 
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
-  </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
-  </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
-  </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
-
-## Create beautiful pages
-
-Everything you need to create world-class documentation.
-
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
-
-## Need inspiration?
-
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="bg-gray-50 dark:bg-[#1a1d27] border border-gray-200 dark:border-[#27272a] rounded-2xl p-8 sm:p-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Ready to get started?
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+      Install FirestoreORM and start building type-safe Firestore applications today
+    </p>
+    <a
+      href="/installation"
+      className="inline-block bg-[#238636] hover:bg-[#2ea043] text-white font-semibold py-3 px-8 rounded-lg transition-colors no-underline"
+    >
+      Install Now
+    </a>
+  </div>
+</div>

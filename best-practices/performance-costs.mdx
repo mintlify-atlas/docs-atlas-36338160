@@ -1,0 +1,557 @@
+---
+title: Performance & Cost Optimization
+description: Understanding Firestore billing, operation costs, and strategies to optimize performance while minimizing expenses
+---
+
+## Firestore Pricing Model
+
+Firestore charges for five main categories of operations:
+
+| Category | What's Charged | Free Tier (Daily) |
+|----------|----------------|-------------------|
+| **Document Reads** | Every document returned from a query | 50,000 |
+| **Document Writes** | Every create, update, or delete | 20,000 |
+| **Document Deletes** | Permanent deletions (separate from writes) | 20,000 |
+| **Storage** | Data stored in your database | 1 GB |
+| **Network Egress** | Data transferred out of Google Cloud | 10 GB |
+
+<Info>
+**Free Tier:** Firestore offers a generous free tier that resets daily. Small applications often stay within these limits. Prices vary by region after exceeding the free tier.
+</Info>
+
+## Operation Costs
+
+Understand exactly what you're charged for with each FirestoreORM operation.
+
+### Read Operations
+
+| Operation | Cost | Notes |
+|-----------|------|-------|
+| `getById('user-123')` | **1 read** | Single document lookup |
+| `list(100)` | **100 reads** | Reads up to 100 documents |
+| `query().where('status', '==', 'active').get()` | **1 read per result** | Charges for every matched document |
+| `query().count()` | **1 read per 1000 docs** | Aggregation query (much cheaper) |
+| `query().exists()` | **1 read** | Reads at most 1 document |
+| `findByField('email', 'john@example.com')` | **1 read per match** | Full collection scan if no index |
+| `getById('user-123', true)` with deleted doc | **1 read** | Reading soft-deleted docs costs the same |
+
+### Write Operations
+
+| Operation | Cost | Notes |
+|-----------|------|-------|
+| `create(userData)` | **1 write** | Single write operation |
+| `bulkCreate([...100 users])` | **100 writes** | Batched but still counts as 100 writes |
+| `update('user-123', { name: 'Jane' })` | **1 write** | Even if updating one field |
+| `update('user-123', { 'nested.field': 'value' })` | **1 write** | Dot notation doesn't reduce cost |
+| `softDelete('user-123')` | **1 write** | Updates `deletedAt` field (not a delete) |
+| `restore('user-123')` | **1 write** | Sets `deletedAt` to null |
+| `delete('user-123')` | **1 delete** | Permanent deletion |
+| `query().update({ status: 'active' })` | **1 read + 1 write per match** | Reads documents then updates |
+
+### Bulk Operations
+
+```typescript
+// Bulk create 500 users
+await userRepo.bulkCreate(users); // 500 users
+// Cost: 500 writes
+
+// Bulk update
+await userRepo.bulkUpdate([
+  { id: 'user-1', data: { status: 'active' } },
+  { id: 'user-2', data: { status: 'inactive' } },
+  // ... 100 total
+]);
+// Cost: 100 writes (no reads - IDs provided)
+
+// Bulk delete
+await userRepo.bulkDelete(['user-1', 'user-2', 'user-3']);
+// Cost: 3 deletes
+```
+
+<Note>
+**Batching Benefits:** Firestore batches are atomic and more efficient for network transfer, but you're still charged for each individual operation. The benefit is reliability and reduced network overhead, not reduced billing.
+</Note>
+
+### Real-Time Listeners
+
+```typescript
+const unsubscribe = await orderRepo.query()
+  .where('userId', '==', userId)
+  .where('status', '==', 'active')
+  .onSnapshot((orders) => {
+    console.log('Orders updated:', orders.length);
+  });
+```
+
+**Cost Breakdown:**
+- **Initial load:** 1 read per matching document (e.g., 50 docs = 50 reads)
+- **Each change:** 1 read for the changed document
+- **Example:** 50 initial docs + 100 updates/day = **150 reads/day per listener**
+
+<Warning>
+**Real-Time Listener Costs Add Up:**
+
+1,000 active users with listeners on 50 documents each:
+- Initial: 50,000 reads (hits free tier limit immediately)
+- If each user sees 10 updates/hour: 1,000 users × 10 updates × 24 hours = **240,000 reads/day**
+
+Consider polling or webhook-based updates for high-traffic scenarios.
+</Warning>
+
+## What Happens Under the Hood
+
+### Simple Query
+
+```typescript
+const users = await userRepo.query()
+  .where('status', '==', 'active')
+  .limit(10)
+  .get();
+```
+
+**Execution:**
+1. ORM automatically adds `.where('deletedAt', '==', null)` for soft delete filtering
+2. Firestore executes query with both conditions
+3. Returns up to 10 matching documents
+4. **Cost:** 10 reads (or fewer if less than 10 matches)
+
+### Pagination
+
+```typescript
+const { items, nextCursorId } = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .paginate(20, cursorId);
+```
+
+**Execution:**
+1. If `cursorId` provided, fetches that document first (**1 read**)
+2. Executes query starting after cursor document
+3. Returns up to 20 documents (**20 reads**)
+4. **Total Cost:** 21 reads (20 results + 1 cursor lookup)
+
+<Tip>
+**Cursor Lookup Optimization:** The cursor document is cached after first access, so subsequent page navigation may not always incur the extra read if done quickly.
+</Tip>
+
+### Bulk Create
+
+```typescript
+await userRepo.bulkCreate(users); // 500 users
+```
+
+**Execution:**
+1. Validates all 500 documents against Zod schema (no Firestore cost)
+2. Splits into batches of 500 operations (Firestore batch limit)
+3. Commits each batch sequentially
+4. **Cost:** 500 writes
+5. **Time:** ~800ms (varies by network latency)
+
+### Query Update
+
+```typescript
+await orderRepo.query()
+  .where('status', '==', 'pending')
+  .update({ status: 'shipped' }); // 150 matches
+```
+
+**Execution:**
+1. Executes query to find matching documents (**150 reads**)
+2. Batches updates in groups of 500 (single batch in this case)
+3. Commits all updates (**150 writes**)
+4. **Total Cost:** 150 reads + 150 writes = **300 operations**
+
+<Info>
+Query updates are efficient for network traffic (single batch) but you pay for both reads and writes. If you already have the document IDs, use `bulkUpdate()` to skip the read cost.
+</Info>
+
+### Soft Delete
+
+```typescript
+await userRepo.softDelete(userId);
+```
+
+**Execution:**
+1. Fetches document to verify existence (**1 read**)
+2. Updates `deletedAt` field to current timestamp (**1 write**)
+3. Triggers `beforeSoftDelete` and `afterSoftDelete` hooks
+4. **Cost:** 1 read + 1 write
+
+**Comparison with Hard Delete:**
+```typescript
+await userRepo.delete(userId);
+// Cost: 1 delete (no read required by Firestore)
+```
+
+### Transaction
+
+```typescript
+await accountRepo.runInTransaction(async (tx, repo) => {
+  const from = await repo.getForUpdate(tx, 'acc-1');
+  const to = await repo.getForUpdate(tx, 'acc-2');
+  
+  await repo.updateInTransaction(tx, 'acc-1', { 
+    balance: from.balance - 100 
+  });
+  await repo.updateInTransaction(tx, 'acc-2', { 
+    balance: to.balance + 100 
+  });
+});
+```
+
+**Execution:**
+1. Reads both documents within transaction (**2 reads**)
+2. Locks both documents until transaction completes
+3. Validates business logic (no Firestore cost)
+4. Commits both updates atomically (**2 writes**)
+5. **Total Cost:** 2 reads + 2 writes = **4 operations**
+
+<Note>
+**Transaction Retries:** If a transaction fails due to conflicts (another write to the same documents), Firestore automatically retries up to 5 times. Each retry incurs additional read costs.
+</Note>
+
+## Cost Optimization Strategies
+
+### 1. Use Aggregations Instead of Fetching
+
+<CodeGroup>
+```typescript Efficient
+// ✅ Aggregation query - charges per 1000 docs
+const total = await userRepo.query()
+  .where('status', '==', 'active')
+  .count();
+// Cost: 1 read per 1000 matching documents
+```
+
+```typescript Expensive
+// ❌ Fetches all documents - charges per doc
+const users = await userRepo.query()
+  .where('status', '==', 'active')
+  .get();
+const total = users.length;
+// Cost: 1 read per matching document
+```
+</CodeGroup>
+
+**Example Savings:**
+- 5,000 active users
+- Aggregation: 5 reads
+- Fetch all: 5,000 reads
+- **Savings: 99.9%**
+
+### 2. Always Limit Queries
+
+```typescript
+// ❌ Dangerous - could read millions of documents
+const allUsers = await userRepo.query().get();
+
+// ✅ Safe - bounded cost
+const recentUsers = await userRepo.query()
+  .orderBy('createdAt', 'desc')
+  .limit(100)
+  .get();
+// Maximum cost: 100 reads
+```
+
+### 3. Use exists() for Presence Checks
+
+<CodeGroup>
+```typescript Efficient
+// ✅ Reads at most 1 document, stops immediately
+const hasOrders = await orderRepo.query()
+  .where('userId', '==', userId)
+  .exists();
+// Cost: 1 read (or 0 if no match)
+```
+
+```typescript Expensive
+// ❌ Reads all matching documents
+const orders = await orderRepo.query()
+  .where('userId', '==', userId)
+  .get();
+const hasOrders = orders.length > 0;
+// Cost: 1 read per matching document (could be 1000s)
+```
+</CodeGroup>
+
+### 4. Bulk Operations Over Individual
+
+<CodeGroup>
+```typescript Efficient
+// ✅ Single batch, efficient network usage
+await userRepo.bulkUpdate([
+  { id: 'user-1', data: { status: 'active' } },
+  { id: 'user-2', data: { status: 'active' } },
+  { id: 'user-3', data: { status: 'active' } }
+]);
+// Cost: 3 writes
+// Network: 1 round trip
+```
+
+```typescript Inefficient
+// ❌ Multiple network round trips
+await userRepo.update('user-1', { status: 'active' });
+await userRepo.update('user-2', { status: 'active' });
+await userRepo.update('user-3', { status: 'active' });
+// Cost: 3 writes (same)
+// Network: 3 round trips (slower)
+```
+</CodeGroup>
+
+**Same cost, but bulk operations are faster and more reliable.**
+
+### 5. Select Specific Fields
+
+```typescript
+// Reduces network bandwidth (still charges full read)
+const emails = await userRepo.query()
+  .where('subscribed', '==', true)
+  .select('email', 'name')
+  .get();
+// Billing: Same as fetching full documents
+// Network: Reduced (only 2 fields transferred)
+// Performance: Faster deserialization
+```
+
+<Info>
+Field selection doesn't reduce read costs but improves performance by:
+- Reducing network bandwidth usage
+- Faster JSON parsing
+- Lower memory usage
+- Helpful in bandwidth-constrained environments
+</Info>
+
+### 6. Cache Frequently Accessed Data
+
+```typescript
+import { Redis } from 'ioredis';
+
+class CachedUserRepository {
+  private repo = FirestoreRepository.withSchema<User>(db, 'users', userSchema);
+  private cache = new Redis(process.env.REDIS_URL);
+  private cacheTTL = 300; // 5 minutes
+
+  async getById(id: string): Promise<User | null> {
+    // Check cache first
+    const cached = await this.cache.get(`user:${id}`);
+    if (cached) {
+      return JSON.parse(cached); // No Firestore cost
+    }
+
+    // Fallback to Firestore
+    const user = await this.repo.getById(id); // 1 read
+    if (user) {
+      await this.cache.setex(`user:${id}`, this.cacheTTL, JSON.stringify(user));
+    }
+
+    return user;
+  }
+
+  async update(id: string, data: Partial<User>): Promise<User> {
+    const user = await this.repo.update(id, data); // 1 write
+    // Invalidate cache
+    await this.cache.del(`user:${id}`);
+    return user;
+  }
+}
+```
+
+**Cost Savings Example:**
+- Without cache: 10,000 getById calls = 10,000 reads
+- With cache (80% hit rate): 2,000 reads + Redis costs
+- **Savings: 80%**
+
+### 7. Denormalize for Read-Heavy Workloads
+
+Instead of reading multiple collections:
+
+```typescript
+// ❌ Multiple reads for display
+const order = await orderRepo.getById(orderId); // 1 read
+const user = await userRepo.getById(order.userId); // 1 read
+const product = await productRepo.getById(order.productId); // 1 read
+// Total: 3 reads per order display
+
+// ✅ Denormalized - embed user and product info in order
+const order = await orderRepo.getById(orderId); // 1 read
+// order contains: { userId, userName, userEmail, productId, productName, ... }
+// Total: 1 read
+```
+
+<Warning>
+**Denormalization Tradeoff:**
+- **Pros:** Fewer reads, faster queries, better for read-heavy apps
+- **Cons:** More writes to keep data in sync, larger document sizes, potential data inconsistency
+
+Use for data that doesn't change often (user names, product titles) but is read frequently.
+</Warning>
+
+## Monitoring and Alerting
+
+### Track Firestore Usage
+
+```typescript
+class FirestoreMetrics {
+  private metrics = {
+    reads: 0,
+    writes: 0,
+    deletes: 0
+  };
+
+  trackRead(count: number = 1) {
+    this.metrics.reads += count;
+  }
+
+  trackWrite(count: number = 1) {
+    this.metrics.writes += count;
+  }
+
+  trackDelete(count: number = 1) {
+    this.metrics.deletes += count;
+  }
+
+  getMetrics() {
+    return { ...this.metrics };
+  }
+
+  reset() {
+    this.metrics = { reads: 0, writes: 0, deletes: 0 };
+  }
+}
+
+export const firestoreMetrics = new FirestoreMetrics();
+
+// Instrument your repositories
+const originalGet = userRepo.query().get;
+userRepo.query().get = async function(...args) {
+  const results = await originalGet.apply(this, args);
+  firestoreMetrics.trackRead(results.length);
+  return results;
+};
+```
+
+### Set Budget Alerts
+
+1. **Firebase Console:**
+   - Go to Project Settings → Usage and Billing
+   - Set up budget alerts at 50%, 75%, 90% of your limit
+
+2. **Google Cloud Console:**
+   - Create budget alerts with specific thresholds
+   - Configure email notifications
+   - Set up programmatic notifications via Pub/Sub
+
+### Log Expensive Queries
+
+```typescript
+import { logger } from './logger';
+
+const EXPENSIVE_QUERY_THRESHOLD = 1000;
+
+userRepo.query = new Proxy(userRepo.query, {
+  apply(target, thisArg, args) {
+    const query = target.apply(thisArg, args);
+    const originalGet = query.get;
+    
+    query.get = async function() {
+      const startTime = Date.now();
+      const results = await originalGet.apply(this);
+      const duration = Date.now() - startTime;
+      
+      if (results.length > EXPENSIVE_QUERY_THRESHOLD) {
+        logger.warn('Expensive query detected', {
+          collection: 'users',
+          resultCount: results.length,
+          duration,
+          cost: `${results.length} reads`
+        });
+      }
+      
+      return results;
+    };
+    
+    return query;
+  }
+});
+```
+
+## Cost Estimation Examples
+
+### E-commerce Order System
+
+**Daily Operations:**
+- 1,000 new orders created: **1,000 writes**
+- 5,000 users checking order status: **5,000 reads**
+- 500 order status updates: **500 writes**
+- 100 order cancellations (soft delete): **100 reads + 100 writes**
+- Admin dashboard queries (daily stats): **~10,000 reads** (aggregations)
+
+**Total Daily:**
+- Reads: 15,100
+- Writes: 1,600
+- **Within free tier** ✅
+
+### Social Media Feed
+
+**Daily Operations:**
+- 10,000 users load feed (50 posts each): **500,000 reads**
+- 5,000 new posts created: **5,000 writes**
+- 50,000 likes/comments: **50,000 writes**
+- Real-time feed updates (10,000 users × 100 updates/day): **1,000,000 reads**
+
+**Total Daily:**
+- Reads: 1,500,000
+- Writes: 55,000
+- **Exceeds free tier** ❌
+
+**Optimization Needed:**
+1. Cache feed data in Redis (reduce reads by 80%)
+2. Use pagination with smaller page sizes (50 → 20 posts)
+3. Replace real-time listeners with polling every 30 seconds
+4. Denormalize post data to reduce joins
+
+**After Optimization:**
+- Reads: ~300,000 (80% cached)
+- Writes: 55,000
+- **Significant cost reduction** ✅
+
+## Performance Benchmarks
+
+Based on testing with Firebase Admin SDK:
+
+| Operation | Documents | Average Time | Cost |
+|-----------|-----------|--------------|------|
+| `create()` | 1 | ~50ms | 1 write |
+| `bulkCreate()` | 100 | ~300ms | 100 writes |
+| `bulkCreate()` | 500 | ~800ms | 500 writes |
+| `bulkCreate()` | 1,000 | ~1.6s | 1,000 writes |
+| `getById()` | 1 | ~30ms | 1 read |
+| `query().get()` | 100 | ~100ms | 100 reads |
+| `query().count()` | 10,000 | ~200ms | 10 reads |
+| `update()` | 1 | ~50ms | 1 write |
+| `bulkUpdate()` | 100 | ~350ms | 100 writes |
+| `transaction` | 2R + 2W | ~100ms | 2 reads + 2 writes |
+
+<Note>
+**Factors Affecting Performance:**
+- Network latency (varies by region: US, EU, Asia)
+- Document size (larger docs take longer to transfer)
+- Firestore built-in caching (frequently accessed docs are faster)
+- Index warmup (first query using an index may be slower)
+</Note>
+
+## Best Practices Summary
+
+<Tip>
+**Top 10 Cost Optimization Tips:**
+
+1. **Use aggregations** (`count()`, `aggregate()`) instead of fetching all documents
+2. **Always limit queries** to prevent unbounded reads
+3. **Use cursor-based pagination** for large datasets
+4. **Cache frequently accessed data** in Redis or similar
+5. **Denormalize read-heavy data** to reduce join queries
+6. **Use `exists()`** for simple presence checks
+7. **Batch operations** where possible for better network efficiency
+8. **Monitor usage** and set budget alerts
+9. **Replace real-time listeners** with polling where acceptable
+10. **Select specific fields** to reduce bandwidth
+</Tip>

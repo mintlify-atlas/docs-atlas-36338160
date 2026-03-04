@@ -1,0 +1,707 @@
+---
+title: 'Real-time Updates'
+description: 'Subscribe to live data changes with Firestore snapshots'
+icon: 'bolt'
+---
+
+FirestoreORM's real-time subscriptions allow you to receive instant updates when documents change. Perfect for dashboards, notifications, and collaborative applications.
+
+## Understanding Real-time Subscriptions
+
+Real-time subscriptions use Firestore's `onSnapshot` listener to receive updates whenever matching documents are added, modified, or removed.
+
+### How It Works
+
+<Steps>
+  <Step title="Subscribe">
+    Call `onSnapshot()` with a callback function
+  </Step>
+  <Step title="Initial Data">
+    Callback receives current data immediately
+  </Step>
+  <Step title="Live Updates">
+    Callback is triggered on every change
+  </Step>
+  <Step title="Unsubscribe">
+    Call the returned unsubscribe function to stop listening
+  </Step>
+</Steps>
+
+<Warning>
+Real-time listeners charge you for every document in the initial result set, plus every document that changes. Use filters to minimize costs.
+</Warning>
+
+## Basic Subscriptions
+
+### Subscribe to Query Results
+
+```typescript
+const unsubscribe = await orderRepo.query()
+  .where('status', '==', 'active')
+  .onSnapshot(
+    (orders) => {
+      console.log(`Active orders: ${orders.length}`);
+      updateDashboard(orders);
+    },
+    (error) => {
+      console.error('Snapshot error:', error);
+    }
+  );
+
+// Later: stop listening
+unsubscribe();
+```
+
+### With Error Handling
+
+```typescript
+const unsubscribe = await userRepo.query()
+  .where('status', '==', 'online')
+  .onSnapshot(
+    (users) => {
+      console.log(`${users.length} users online`);
+      setOnlineUsers(users);
+    },
+    (error) => {
+      console.error('Failed to subscribe:', error);
+      showErrorNotification('Connection lost');
+    }
+  );
+```
+
+## Real-World Use Cases
+
+### Live Dashboard
+
+```typescript
+class DashboardService {
+  private unsubscribers: Array<() => void> = [];
+  
+  async startLiveUpdates() {
+    // Subscribe to active orders
+    const ordersUnsub = await orderRepo.query()
+      .where('status', 'in', ['pending', 'processing'])
+      .onSnapshot(
+        (orders) => {
+          this.updateOrdersWidget(orders);
+        },
+        (error) => console.error('Orders subscription error:', error)
+      );
+    this.unsubscribers.push(ordersUnsub);
+    
+    // Subscribe to today's revenue
+    const revenueUnsub = await orderRepo.query()
+      .where('status', '==', 'completed')
+      .where('createdAt', '>=', startOfToday())
+      .onSnapshot(
+        (orders) => {
+          const total = orders.reduce((sum, o) => sum + o.total, 0);
+          this.updateRevenueWidget(total);
+        },
+        (error) => console.error('Revenue subscription error:', error)
+      );
+    this.unsubscribers.push(revenueUnsub);
+    
+    // Subscribe to online users
+    const usersUnsub = await userRepo.query()
+      .where('status', '==', 'online')
+      .onSnapshot(
+        (users) => {
+          this.updateOnlineUsersWidget(users.length);
+        },
+        (error) => console.error('Users subscription error:', error)
+      );
+    this.unsubscribers.push(usersUnsub);
+  }
+  
+  stopLiveUpdates() {
+    // Unsubscribe from all listeners
+    this.unsubscribers.forEach(unsub => unsub());
+    this.unsubscribers = [];
+  }
+  
+  private updateOrdersWidget(orders: Order[]) {
+    // Update UI
+  }
+  
+  private updateRevenueWidget(total: number) {
+    // Update UI
+  }
+  
+  private updateOnlineUsersWidget(count: number) {
+    // Update UI
+  }
+}
+```
+
+### Chat Application
+
+```typescript
+class ChatService {
+  private unsubscribe?: () => void;
+  
+  subscribeToMessages(
+    roomId: string,
+    onMessagesUpdate: (messages: Message[]) => void
+  ) {
+    this.unsubscribe = await messageRepo.query()
+      .where('roomId', '==', roomId)
+      .orderBy('createdAt', 'desc')
+      .limit(50)
+      .onSnapshot(
+        (messages) => {
+          onMessagesUpdate(messages);
+        },
+        (error) => {
+          console.error('Messages subscription error:', error);
+        }
+      );
+  }
+  
+  async sendMessage(roomId: string, text: string, userId: string) {
+    await messageRepo.create({
+      roomId,
+      text,
+      userId,
+      createdAt: new Date().toISOString()
+    });
+    // Subscribers automatically get the new message
+  }
+  
+  disconnect() {
+    if (this.unsubscribe) {
+      this.unsubscribe();
+      this.unsubscribe = undefined;
+    }
+  }
+}
+```
+
+### Notification System
+
+```typescript
+class NotificationService {
+  private unsubscribe?: () => void;
+  
+  subscribeToNotifications(
+    userId: string,
+    onNewNotification: (notification: Notification) => void
+  ) {
+    let lastNotificationCount = 0;
+    
+    this.unsubscribe = await notificationRepo.query()
+      .where('userId', '==', userId)
+      .where('read', '==', false)
+      .orderBy('createdAt', 'desc')
+      .onSnapshot(
+        (notifications) => {
+          // Check if new notifications arrived
+          if (notifications.length > lastNotificationCount) {
+            const newOnes = notifications.slice(
+              0,
+              notifications.length - lastNotificationCount
+            );
+            
+            newOnes.forEach(notification => {
+              onNewNotification(notification);
+              this.showBrowserNotification(notification);
+            });
+          }
+          
+          lastNotificationCount = notifications.length;
+          this.updateBadgeCount(notifications.length);
+        },
+        (error) => console.error('Notifications error:', error)
+      );
+  }
+  
+  private showBrowserNotification(notification: Notification) {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(notification.title, {
+        body: notification.message,
+        icon: '/icon.png'
+      });
+    }
+  }
+  
+  private updateBadgeCount(count: number) {
+    // Update UI badge
+  }
+  
+  disconnect() {
+    if (this.unsubscribe) {
+      this.unsubscribe();
+    }
+  }
+}
+```
+
+### Presence System
+
+```typescript
+class PresenceService {
+  private unsubscribe?: () => void;
+  private heartbeatInterval?: NodeJS.Timeout;
+  
+  async goOnline(userId: string) {
+    // Mark user as online
+    await userRepo.update(userId, {
+      status: 'online',
+      lastSeen: new Date().toISOString()
+    });
+    
+    // Send heartbeat every 30 seconds
+    this.heartbeatInterval = setInterval(async () => {
+      await userRepo.update(userId, {
+        lastSeen: new Date().toISOString()
+      });
+    }, 30000);
+  }
+  
+  async goOffline(userId: string) {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+    }
+    
+    await userRepo.update(userId, {
+      status: 'offline',
+      lastSeen: new Date().toISOString()
+    });
+  }
+  
+  subscribeToOnlineUsers(
+    onUpdate: (users: User[]) => void
+  ) {
+    this.unsubscribe = await userRepo.query()
+      .where('status', '==', 'online')
+      .onSnapshot(
+        (users) => {
+          onUpdate(users);
+        },
+        (error) => console.error('Presence error:', error)
+      );
+  }
+  
+  disconnect() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+    }
+    if (this.unsubscribe) {
+      this.unsubscribe();
+    }
+  }
+}
+```
+
+### Collaborative Editing
+
+```typescript
+class CollaborationService {
+  private unsubscribe?: () => void;
+  
+  subscribeToDocument(
+    documentId: string,
+    onUpdate: (doc: Document, editors: string[]) => void
+  ) {
+    // Subscribe to document changes
+    this.unsubscribe = await documentRepo.query()
+      .where('id', '==', documentId)
+      .onSnapshot(
+        async (docs) => {
+          if (docs.length === 0) return;
+          
+          const doc = docs[0];
+          
+          // Get active editors
+          const editorsSnapshot = await editorRepo.query()
+            .where('documentId', '==', documentId)
+            .where('lastSeen', '>', fiveMinutesAgo())
+            .get();
+          
+          const editors = editorsSnapshot.map(e => e.userId);
+          onUpdate(doc, editors);
+        },
+        (error) => console.error('Document subscription error:', error)
+      );
+  }
+  
+  async updatePresence(documentId: string, userId: string) {
+    await editorRepo.upsert(`${documentId}-${userId}`, {
+      documentId,
+      userId,
+      lastSeen: new Date().toISOString()
+    });
+  }
+  
+  disconnect() {
+    if (this.unsubscribe) {
+      this.unsubscribe();
+    }
+  }
+}
+```
+
+## React Integration
+
+### Custom Hook
+
+```typescript
+import { useState, useEffect } from 'react';
+
+function useRealtimeQuery<T>(query: FirestoreQueryBuilder<T>) {
+  const [data, setData] = useState<(T & { id: string })[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+  
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined;
+    
+    async function subscribe() {
+      try {
+        unsubscribe = await query.onSnapshot(
+          (items) => {
+            setData(items);
+            setLoading(false);
+          },
+          (err) => {
+            setError(err);
+            setLoading(false);
+          }
+        );
+      } catch (err) {
+        setError(err as Error);
+        setLoading(false);
+      }
+    }
+    
+    subscribe();
+    
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, []);
+  
+  return { data, loading, error };
+}
+```
+
+### Usage in Component
+
+```typescript
+function OrderDashboard() {
+  const { data: orders, loading, error } = useRealtimeQuery(
+    orderRepo.query()
+      .where('status', '==', 'active')
+      .orderBy('createdAt', 'desc')
+  );
+  
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  
+  return (
+    <div>
+      <h1>Active Orders ({orders.length})</h1>
+      {orders.map(order => (
+        <OrderCard key={order.id} order={order} />
+      ))}
+    </div>
+  );
+}
+```
+
+### Multiple Subscriptions
+
+```typescript
+function Dashboard() {
+  const { data: activeOrders } = useRealtimeQuery(
+    orderRepo.query().where('status', '==', 'active')
+  );
+  
+  const { data: onlineUsers } = useRealtimeQuery(
+    userRepo.query().where('status', '==', 'online')
+  );
+  
+  const { data: recentMessages } = useRealtimeQuery(
+    messageRepo.query()
+      .orderBy('createdAt', 'desc')
+      .limit(10)
+  );
+  
+  return (
+    <div>
+      <StatsCard title="Active Orders" value={activeOrders.length} />
+      <StatsCard title="Online Users" value={onlineUsers.length} />
+      <MessageList messages={recentMessages} />
+    </div>
+  );
+}
+```
+
+## Performance Optimization
+
+### Limit Result Size
+
+```typescript
+// ✅ Good - limited results
+const unsubscribe = await messageRepo.query()
+  .where('roomId', '==', roomId)
+  .orderBy('createdAt', 'desc')
+  .limit(50)  // Only last 50 messages
+  .onSnapshot(callback);
+
+// ❌ Bad - potentially thousands of documents
+const unsubscribe = await messageRepo.query()
+  .where('roomId', '==', roomId)
+  .onSnapshot(callback);
+```
+
+### Use Narrow Filters
+
+```typescript
+// ✅ Good - specific filter
+const unsubscribe = await orderRepo.query()
+  .where('userId', '==', currentUserId)
+  .where('status', 'in', ['pending', 'processing'])
+  .onSnapshot(callback);
+
+// ❌ Bad - all orders
+const unsubscribe = await orderRepo.query()
+  .onSnapshot(callback);
+```
+
+### Unsubscribe When Not Needed
+
+```typescript
+class ComponentLifecycle {
+  private unsubscribe?: () => void;
+  
+  async onMount() {
+    this.unsubscribe = await orderRepo.query()
+      .where('userId', '==', userId)
+      .onSnapshot(this.handleOrders);
+  }
+  
+  onUnmount() {
+    // IMPORTANT: Clean up subscription
+    if (this.unsubscribe) {
+      this.unsubscribe();
+    }
+  }
+}
+```
+
+## Cost Management
+
+### Understanding Costs
+
+```typescript
+// Initial subscription: 100 documents
+const unsubscribe = await orderRepo.query()
+  .where('status', '==', 'active')
+  .onSnapshot(callback);
+// Cost: 100 document reads immediately
+
+// 1 order updated
+// Cost: +1 document read
+
+// 5 new orders created
+// Cost: +5 document reads
+
+// Total so far: 106 document reads
+```
+
+<Warning>
+Real-time listeners can get expensive quickly if documents change frequently. Monitor your usage and use filters wisely.
+</Warning>
+
+### Cost Reduction Strategies
+
+<Steps>
+  <Step title="Use Aggressive Filters">
+    Only subscribe to exactly what you need.
+    
+    ```typescript
+    // ✅ Specific to user
+    .where('userId', '==', currentUserId)
+    .where('status', '==', 'active')
+    ```
+  </Step>
+  
+  <Step title="Limit Results">
+    Use `.limit()` to cap the number of documents.
+    
+    ```typescript
+    .orderBy('createdAt', 'desc')
+    .limit(20)  // Only 20 most recent
+    ```
+  </Step>
+  
+  <Step title="Unsubscribe Aggressively">
+    Stop listening when user navigates away.
+    
+    ```typescript
+    useEffect(() => {
+      const unsub = subscribe();
+      return () => unsub();  // Cleanup
+    }, []);
+    ```
+  </Step>
+  
+  <Step title="Consider Polling">
+    For less critical data, poll instead of real-time.
+    
+    ```typescript
+    // Poll every 30 seconds instead of real-time
+    setInterval(async () => {
+      const data = await repo.query().get();
+      updateUI(data);
+    }, 30000);
+    ```
+  </Step>
+</Steps>
+
+## Error Handling
+
+### Handle Connection Errors
+
+```typescript
+const unsubscribe = await orderRepo.query()
+  .where('status', '==', 'active')
+  .onSnapshot(
+    (orders) => {
+      setOrders(orders);
+      setConnectionStatus('connected');
+    },
+    (error) => {
+      console.error('Subscription error:', error);
+      setConnectionStatus('disconnected');
+      
+      // Show user notification
+      showNotification('Connection lost. Retrying...');
+      
+      // Optionally retry
+      setTimeout(() => {
+        resubscribe();
+      }, 5000);
+    }
+  );
+```
+
+### Automatic Reconnection
+
+```typescript
+class RealtimeConnection {
+  private unsubscribe?: () => void;
+  private retryCount = 0;
+  private maxRetries = 5;
+  
+  async subscribe() {
+    try {
+      this.unsubscribe = await orderRepo.query()
+        .where('userId', '==', userId)
+        .onSnapshot(
+          (orders) => {
+            this.handleOrders(orders);
+            this.retryCount = 0; // Reset on success
+          },
+          (error) => {
+            this.handleError(error);
+          }
+        );
+    } catch (error) {
+      this.handleError(error);
+    }
+  }
+  
+  private handleError(error: any) {
+    console.error('Subscription error:', error);
+    
+    if (this.retryCount < this.maxRetries) {
+      this.retryCount++;
+      const delay = Math.pow(2, this.retryCount) * 1000;
+      
+      console.log(`Retrying in ${delay}ms (attempt ${this.retryCount})`);
+      
+      setTimeout(() => {
+        this.subscribe();
+      }, delay);
+    } else {
+      console.error('Max retries reached. Giving up.');
+    }
+  }
+  
+  disconnect() {
+    if (this.unsubscribe) {
+      this.unsubscribe();
+    }
+  }
+}
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Always Unsubscribe">
+    Prevent memory leaks by cleaning up subscriptions.
+    
+    ```typescript
+    // ✅ Good
+    const unsub = await repo.query().onSnapshot(callback);
+    // Later:
+    unsub();
+    
+    // ❌ Bad - memory leak
+    await repo.query().onSnapshot(callback);
+    // Never unsubscribes
+    ```
+  </Step>
+  
+  <Step title="Use Specific Filters">
+    Minimize the number of documents in your subscription.
+    
+    ```typescript
+    // ✅ Good - user-specific
+    .where('userId', '==', currentUserId)
+    .limit(20)
+    
+    // ❌ Bad - entire collection
+    .onSnapshot(callback)
+    ```
+  </Step>
+  
+  <Step title="Handle Errors">
+    Always provide an error handler.
+    
+    ```typescript
+    await repo.query().onSnapshot(
+      (data) => handleData(data),
+      (error) => handleError(error)  // ✅ Error handler
+    );
+    ```
+  </Step>
+  
+  <Step title="Monitor Costs">
+    Track real-time listener usage in Firebase Console.
+    
+    Check Usage > Firestore > Reads for real-time costs.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Queries" icon="magnifying-glass" href="/guides/queries">
+    Build queries for real-time subscriptions
+  </Card>
+  <Card title="Performance" icon="gauge" href="/best-practices/performance-costs">
+    Optimize real-time subscription costs
+  </Card>
+  <Card title="Streaming" icon="water" href="/guides/streaming">
+    Alternative approach for large datasets
+  </Card>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/best-practices/error-handling">
+    Handle connection errors gracefully
+  </Card>
+</CardGroup>

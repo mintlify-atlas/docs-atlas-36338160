@@ -1,0 +1,691 @@
+---
+title: Soft Deletes
+description: Implement recoverable deletion with automatic soft delete support in all FirestoreORM repositories
+---
+
+## What are Soft Deletes?
+
+Soft deletes mark documents as deleted without permanently removing them from Firestore. Instead of erasing data, a `deletedAt` timestamp is set. This provides:
+
+- **Data recovery**: Restore accidentally deleted documents
+- **Audit trails**: Track when data was deleted and by whom (with hooks)
+- **Compliance**: Meet regulatory requirements for data retention
+- **Safety**: Prevent permanent data loss from user errors
+
+In contrast, **hard deletes** permanently remove documents from Firestore and cannot be recovered.
+
+## How It Works
+
+### Automatic deletedAt Field
+
+Every document created through FirestoreORM automatically includes a `deletedAt` field set to `null`:
+
+From `src/core/FirestoreRepository.ts:307-325`:
+
+```typescript
+async create(data: T): Promise<T & { id: ID }> {
+  try{
+    const validData = this.validator ? this.validator.parseCreate(data) : data;
+    const docToCreate = { ...validData, deletedAt: null }; // Added automatically
+
+    await this.runHooks('beforeCreate', docToCreate);
+
+    const docRef = await this.col().add(docToCreate as any);
+    const created = { ...docToCreate, id: docRef.id };
+
+    await this.runHooks('afterCreate', created);
+    return created;
+  }catch(err: any){
+    if(err instanceof z.ZodError){
+      throw new ValidationError(err.issues);
+    }
+    throw parseFirestoreError(err);
+  }
+}
+```
+
+When a document is created, `deletedAt: null` is added on line 310. This ensures all documents have the field, which is essential for filtering queries.
+
+### Soft Delete Implementation
+
+From `src/core/FirestoreRepository.ts:716-731`:
+
+```typescript
+async softDelete(id: ID): Promise<void> {
+  try{
+    const docRef = await this.col().doc(id);
+    const snapshot = await docRef.get();
+
+    if(!snapshot.exists) throw new NotFoundError(`Document with ID ${id} not found`);
+    const docData = { ...snapshot.data() as T, id };
+    const deletedAt = new Date().toISOString();
+
+    await this.runHooks('beforeSoftDelete', { ...docData, deletedAt });
+    await docRef.update({ deletedAt });
+    await this.runHooks('afterSoftDelete', { ...docData, deletedAt });
+  }catch(error: any){
+    throw parseFirestoreError(error);
+  }
+}
+```
+
+The soft delete operation:
+1. Checks if the document exists (line 721)
+2. Creates an ISO timestamp (line 723)
+3. Runs `beforeSoftDelete` hooks (line 725)
+4. Updates the `deletedAt` field (line 726)
+5. Runs `afterSoftDelete` hooks (line 727)
+
+### Automatic Query Filtering
+
+From `src/core/QueryBuilder.ts:787-791`:
+
+```typescript
+private applySoftDeleteFilter(q: Query): Query {
+  if(this.onlyDeletedFlag) return q.where('deletedAt', '!=', null);
+  if(!this.includeDeletedFlag) return q.where('deletedAt', '==', null);
+  return q;
+}
+```
+
+All queries automatically exclude soft-deleted documents by adding `where('deletedAt', '==', null)` unless explicitly requested otherwise.
+
+## Basic Operations
+
+### Soft Delete a Document
+
+```typescript
+import { FirestoreRepository } from '@spacelabs/firestore-orm';
+
+const userRepo = new FirestoreRepository<User>(db, 'users');
+
+// Soft delete a user
+await userRepo.softDelete('user-123');
+
+// Document still exists in Firestore but won't appear in queries
+const user = await userRepo.getById('user-123');
+console.log(user); // null
+
+// Access deleted document explicitly
+const deletedUser = await userRepo.getById('user-123', true); // includeDeleted = true
+console.log(deletedUser?.deletedAt); // "2024-03-15T10:30:45.123Z"
+```
+
+### Restore a Deleted Document
+
+From `src/core/FirestoreRepository.ts:861-875`:
+
+```typescript
+async restore(id: ID): Promise<void>{
+  try{
+    const docRef = await this.col().doc(id);
+    const snapshot = await docRef.get();
+
+    if(!snapshot.exists) throw new NotFoundError(`Document with ID ${id} not found`);
+    const docData = { ...snapshot.data() as T, id };
+
+    await this.runHooks('beforeRestore', docData);
+    await docRef.update({ deletedAt: null });
+    await this.runHooks('afterRestore', { ...docData, deletedAt: null });
+  }catch(error: any){
+    throw parseFirestoreError(error);
+  }
+}
+```
+
+Restoring sets `deletedAt` back to `null`:
+
+```typescript
+// Restore the user
+await userRepo.restore('user-123');
+
+// Now accessible in normal queries
+const user = await userRepo.getById('user-123');
+console.log(user?.name); // "John Doe"
+```
+
+### Hard Delete (Permanent)
+
+```typescript
+// Permanently delete - cannot be recovered
+await userRepo.delete('user-123');
+
+// Document is gone from Firestore
+const user = await userRepo.getById('user-123');
+console.log(user); // null
+
+const deleted = await userRepo.getById('user-123', true);
+console.log(deleted); // still null - permanently deleted
+```
+
+## Bulk Operations
+
+### Bulk Soft Delete
+
+From `src/core/FirestoreRepository.ts:754-792`:
+
+```typescript
+async bulkSoftDelete(ids: ID[]): Promise<number> {
+  try{
+    const snapshots = await Promise.all(
+      ids.map(id => this.col().doc(id).get())
+    );
+
+    const docsData: (T & { id: ID })[] = snapshots
+      .filter(snapshot => snapshot.exists)
+      .map(snapshot => ({
+        ...snapshot.data() as T,
+        id: snapshot.id
+      })
+    );
+    
+    if(docsData.length === 0) return 0;
+
+    const deletedAt = new Date().toISOString();
+    await this.runHooks('beforeBulkSoftDelete', {
+      ids: docsData.map(d => d.id),
+      documents: docsData,
+      deletedAt
+    });
+
+    const actions: ((batch: FirebaseFirestore.WriteBatch) => void)[] = [];
+    for(const id of ids){
+      const docRef = this.col().doc(id);
+      actions.push(batch => batch.update(docRef, { deletedAt }));
+    }
+    await this.commitInChunks(actions);
+    await this.runHooks('afterBulkSoftDelete', {
+      ids: docsData.map(d => d.id),
+      documents: docsData,
+      deletedAt
+    });
+    return docsData.length;
+  }catch(error: any){
+    throw parseFirestoreError(error);
+  }
+}
+```
+
+Bulk soft delete uses Firestore batches for efficiency:
+
+```typescript
+// Soft delete multiple users at once
+const inactiveUsers = await userRepo.query()
+  .where('lastLogin', '<', oneYearAgo)
+  .get();
+
+const deletedCount = await userRepo.bulkSoftDelete(
+  inactiveUsers.map(u => u.id)
+);
+
+console.log(`Archived ${deletedCount} inactive users`);
+```
+
+### Bulk Restore
+
+From `src/core/FirestoreRepository.ts:892-915`:
+
+```typescript
+async restoreAll(): Promise<number>{
+  try{
+    const snapshot = await this.col().where('deletedAt', '!=', null).get();
+    if(snapshot.empty) return 0;
+
+    const docsData = snapshot.docs.map(doc => ({
+      ...doc.data() as T,
+      id: doc.id,
+    }));
+
+    await this.runHooks('beforeBulkRestore', { documents: docsData });
+
+    const actions: ((batch: FirebaseFirestore.WriteBatch) => void)[] = [];
+
+    for(const doc of snapshot.docs){
+      actions.push(batch => batch.update(doc.ref, { deletedAt: null }));
+    }
+    await this.commitInChunks(actions);
+    await this.runHooks('afterBulkRestore', { documents: docsData });
+    return snapshot.size;
+  }catch(error: any){
+    throw parseFirestoreError(error);
+  }
+}
+```
+
+Restore all soft-deleted documents:
+
+```typescript
+// Restore all deleted users
+const restoredCount = await userRepo.restoreAll();
+console.log(`Restored ${restoredCount} users`);
+```
+
+### Purge Deleted Documents
+
+From `src/core/FirestoreRepository.ts:812-840`:
+
+```typescript
+async purgeDelete(): Promise<number> {
+  try{
+    const snapshot = await this.col().where('deletedAt', '!=', null).get();
+    if(snapshot.empty) return 0;
+
+    // max (500) per batch
+    let batch = this.db.batch();
+    let counter = 0;
+    let totalDeleted = 0;
+
+    for(const doc of snapshot.docs){
+      batch.delete(doc.ref);
+      counter++;
+      totalDeleted++;
+
+      // commit every 500 operations
+      if(counter === 500){
+        await batch.commit();
+        batch = this.db.batch();
+        counter = 0;
+      }
+    }
+    // commit remaining deletes
+    if(counter > 0) await batch.commit();
+    return totalDeleted;
+  }catch(error: any){
+    throw parseFirestoreError(error);
+  }
+}
+```
+
+Permanently delete all soft-deleted documents:
+
+```typescript
+// Clean up all soft-deleted users permanently
+const purgedCount = await userRepo.purgeDelete();
+console.log(`Permanently deleted ${purgedCount} users`);
+
+// Schedule regular cleanup (e.g., with Cloud Functions)
+export const monthlyCleanup = functions.pubsub
+  .schedule('0 0 1 * *')
+  .onRun(async () => {
+    const purged = await userRepo.purgeDelete();
+    console.log(`Monthly cleanup: ${purged} documents purged`);
+  });
+```
+
+## Querying Deleted Documents
+
+### Include Deleted in Query
+
+```typescript
+// Get all users including deleted ones
+const allUsers = await userRepo.query()
+  .includeDeleted()
+  .get();
+
+// Count including deleted
+const totalCount = await userRepo.query()
+  .includeDeleted()
+  .count();
+```
+
+### Query Only Deleted Documents
+
+From `src/core/QueryBuilder.ts:98-102`:
+
+```typescript
+onlyDeleted(): this {
+  this.onlyDeletedFlag = true;
+  this.includeDeletedFlag = false;
+  return this;
+}
+```
+
+```typescript
+// Find all deleted users
+const deletedUsers = await userRepo.query()
+  .onlyDeleted()
+  .get();
+
+// Count deleted orders from last month
+const deletedLastMonth = await orderRepo.query()
+  .onlyDeleted()
+  .where('deletedAt', '>', lastMonth)
+  .count();
+
+// Find deleted documents by criteria
+const deletedAdmins = await userRepo.query()
+  .onlyDeleted()
+  .where('role', '==', 'admin')
+  .get();
+```
+
+### Query Updates with Soft Deletes
+
+From `src/core/QueryBuilder.ts:205-248`:
+
+```typescript
+async update(data: Partial<T>): Promise<number> {
+  try{
+    if(hasDotNotationKeys(data as Record<string, any>)){
+      Object.keys(data).forEach(key => {
+        if(key.includes('.')) validateDotNotationPath(key);
+      });
+    }
+
+    const finalQuery = this.applySoftDeleteFilter(this.query);
+    const snapshot = await finalQuery.get();
+
+    if(snapshot.empty) return 0;
+
+    // ... update logic
+  }
+}
+```
+
+Query updates automatically respect soft delete status:
+
+```typescript
+// Only updates active (non-deleted) users
+await userRepo.query()
+  .where('role', '==', 'user')
+  .update({ verified: true });
+
+// Update deleted users specifically
+await userRepo.query()
+  .onlyDeleted()
+  .where('deletedAt', '<', thirtyDaysAgo)
+  .update({ archived: true });
+```
+
+## Real-World Use Cases
+
+### User Account Deletion
+
+```typescript
+// User requests account deletion
+export async function deleteUserAccount(userId: string) {
+  // Soft delete the account
+  await userRepo.softDelete(userId);
+  
+  // Log the deletion
+  await auditLog.create({
+    action: 'user_deleted',
+    userId,
+    timestamp: new Date().toISOString()
+  });
+  
+  // Send confirmation email
+  await sendEmail(user.email, 'Account Deleted', {
+    message: 'Your account has been deleted. You have 30 days to restore it.'
+  });
+}
+
+// User wants to restore within 30 days
+export async function restoreUserAccount(userId: string) {
+  const user = await userRepo.getById(userId, true);
+  
+  if (!user?.deletedAt) {
+    throw new Error('Account is not deleted');
+  }
+  
+  const deletedDate = new Date(user.deletedAt);
+  const daysSinceDeletion = (Date.now() - deletedDate.getTime()) / (1000 * 60 * 60 * 24);
+  
+  if (daysSinceDeletion > 30) {
+    throw new Error('Account cannot be restored after 30 days');
+  }
+  
+  await userRepo.restore(userId);
+}
+
+// Scheduled cleanup after 30 days
+export const cleanupDeletedAccounts = functions.pubsub
+  .schedule('0 2 * * *') // Daily at 2 AM
+  .onRun(async () => {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const oldDeleted = await userRepo.query()
+      .onlyDeleted()
+      .where('deletedAt', '<', thirtyDaysAgo.toISOString())
+      .get();
+    
+    if (oldDeleted.length > 0) {
+      await userRepo.bulkDelete(oldDeleted.map(u => u.id));
+      console.log(`Purged ${oldDeleted.length} accounts deleted > 30 days ago`);
+    }
+  });
+```
+
+### Content Moderation
+
+```typescript
+interface Post {
+  id?: string;
+  title: string;
+  content: string;
+  authorId: string;
+  flagged: boolean;
+  moderationReason?: string;
+}
+
+// Moderator soft deletes inappropriate content
+export async function moderatePost(postId: string, reason: string) {
+  // Update with moderation info before soft delete
+  await postRepo.update(postId, {
+    flagged: true,
+    moderationReason: reason
+  });
+  
+  await postRepo.softDelete(postId);
+  
+  // Notify author
+  const post = await postRepo.getById(postId, true);
+  await notifyUser(post!.authorId, {
+    type: 'post_removed',
+    reason,
+    appealUrl: `/appeal/${postId}`
+  });
+}
+
+// User appeals and moderator approves
+export async function approveAppeal(postId: string) {
+  await postRepo.restore(postId);
+  
+  await postRepo.update(postId, {
+    flagged: false,
+    moderationReason: undefined
+  });
+}
+
+// View moderation queue
+export async function getModerationQueue() {
+  return postRepo.query()
+    .onlyDeleted()
+    .where('flagged', '==', true)
+    .orderBy('deletedAt', 'desc')
+    .get();
+}
+```
+
+### Order Management
+
+```typescript
+interface Order {
+  id?: string;
+  userId: string;
+  items: OrderItem[];
+  status: 'pending' | 'processing' | 'shipped' | 'delivered' | 'cancelled';
+  total: number;
+}
+
+// User cancels order
+export async function cancelOrder(orderId: string) {
+  const order = await orderRepo.getById(orderId);
+  
+  if (!order) throw new Error('Order not found');
+  if (order.status === 'shipped') throw new Error('Cannot cancel shipped order');
+  
+  // Update status before soft delete
+  await orderRepo.update(orderId, { status: 'cancelled' });
+  await orderRepo.softDelete(orderId);
+  
+  // Process refund
+  await processRefund(order.userId, order.total);
+}
+
+// Analytics on cancelled orders
+export async function getCancellationStats(startDate: string, endDate: string) {
+  const cancelled = await orderRepo.query()
+    .onlyDeleted()
+    .where('status', '==', 'cancelled')
+    .where('deletedAt', '>=', startDate)
+    .where('deletedAt', '<=', endDate)
+    .get();
+  
+  const totalValue = cancelled.reduce((sum, order) => sum + order.total, 0);
+  
+  return {
+    count: cancelled.length,
+    totalValue,
+    averageValue: totalValue / cancelled.length
+  };
+}
+```
+
+## Soft Deletes with Hooks
+
+Combine soft deletes with lifecycle hooks for powerful workflows:
+
+```typescript
+// Log all deletions
+userRepo.on('afterSoftDelete', async (user) => {
+  await auditLog.create({
+    action: 'user_soft_deleted',
+    userId: user.id,
+    timestamp: user.deletedAt,
+    metadata: { name: user.name, email: user.email }
+  });
+});
+
+// Send notification on restore
+userRepo.on('afterRestore', async (user) => {
+  await sendEmail(user.email, 'Account Restored', {
+    message: 'Your account has been successfully restored!'
+  });
+});
+
+// Cleanup related data on bulk soft delete
+userRepo.on('afterBulkSoftDelete', async ({ ids, documents }) => {
+  console.log(`Soft deleted ${ids.length} users`);
+  
+  // Archive user sessions
+  for (const userId of ids) {
+    await sessionRepo.query()
+      .where('userId', '==', userId)
+      .delete();
+  }
+});
+```
+
+## Best Practices
+
+### 1. Use Soft Deletes by Default
+
+Soft deletes should be your default deletion strategy:
+
+```typescript
+// Good: Soft delete allows recovery
+await userRepo.softDelete(userId);
+
+// Use hard delete only when necessary
+// (e.g., compliance requirements, data minimization)
+await userRepo.delete(userId);
+```
+
+### 2. Implement Retention Policies
+
+```typescript
+// Automatically purge old soft-deleted data
+export const enforceSoftDeleteRetention = functions.pubsub
+  .schedule('0 3 * * 0') // Weekly at 3 AM Sunday
+  .onRun(async () => {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 90); // 90-day retention
+    
+    const oldDeleted = await userRepo.query()
+      .onlyDeleted()
+      .where('deletedAt', '<', cutoffDate.toISOString())
+      .get();
+    
+    if (oldDeleted.length > 0) {
+      await userRepo.bulkDelete(oldDeleted.map(u => u.id));
+    }
+  });
+```
+
+### 3. Provide Restore UI
+
+```typescript
+// API endpoint to list recently deleted items
+app.get('/api/users/deleted', async (req, res) => {
+  const deletedUsers = await userRepo.query()
+    .onlyDeleted()
+    .where('deletedAt', '>', thirtyDaysAgo)
+    .orderBy('deletedAt', 'desc')
+    .get();
+  
+  res.json(deletedUsers);
+});
+
+// Restore endpoint
+app.post('/api/users/:id/restore', async (req, res) => {
+  await userRepo.restore(req.params.id);
+  res.json({ success: true });
+});
+```
+
+### 4. Document Your Deletion Policy
+
+```typescript
+/**
+ * User Deletion Policy:
+ * - Soft deleted accounts can be restored within 30 days
+ * - After 30 days, accounts are permanently deleted
+ * - Hard deletes only for GDPR/compliance requests
+ */
+export class UserService {
+  async deleteAccount(userId: string) {
+    await userRepo.softDelete(userId);
+  }
+  
+  async gdprDelete(userId: string) {
+    // Hard delete for compliance
+    await userRepo.delete(userId);
+    await this.deleteAllUserData(userId);
+  }
+}
+```
+
+### 5. Monitor Soft Delete Metrics
+
+```typescript
+export async function getSoftDeleteMetrics() {
+  const [active, deleted] = await Promise.all([
+    userRepo.query().count(),
+    userRepo.query().onlyDeleted().count()
+  ]);
+  
+  return {
+    activeUsers: active,
+    deletedUsers: deleted,
+    deletionRate: (deleted / (active + deleted)) * 100
+  };
+}
+```
+
+## What's Next?
+
+- Learn about [Lifecycle Hooks](/concepts/lifecycle-hooks) to add logic around soft deletes
+- Explore [Schema Validation](/concepts/schema-validation) for data integrity
+- Review the [Repository Pattern](/concepts/repository-pattern) guide

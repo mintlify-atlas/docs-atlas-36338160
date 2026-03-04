@@ -1,0 +1,678 @@
+---
+title: 'Dot Notation Updates'
+description: 'Update nested fields without replacing entire objects using dot notation'
+icon: 'circle-dot'
+---
+
+FirestoreORM supports Firestore's dot notation syntax for updating nested fields. This allows you to update specific properties deep within objects while preserving other fields.
+
+## Understanding Dot Notation
+
+Dot notation lets you target specific nested fields using a path-like syntax.
+
+### Without Dot Notation (Replaces Entire Object)
+
+```typescript
+// Original document
+{
+  name: 'John',
+  address: {
+    street: '123 Main St',
+    city: 'San Francisco',
+    zipCode: '94102',
+    country: 'USA'
+  }
+}
+
+// Update without dot notation
+await userRepo.update('user-123', {
+  address: {
+    city: 'Los Angeles'
+  }
+});
+
+// Result: address object is REPLACED
+{
+  name: 'John',
+  address: {
+    city: 'Los Angeles'
+    // ❌ street, zipCode, country are LOST
+  }
+}
+```
+
+### With Dot Notation (Updates Only Specified Fields)
+
+```typescript
+// Original document
+{
+  name: 'John',
+  address: {
+    street: '123 Main St',
+    city: 'San Francisco',
+    zipCode: '94102',
+    country: 'USA'
+  }
+}
+
+// Update with dot notation
+await userRepo.update('user-123', {
+  'address.city': 'Los Angeles'
+} as any);
+
+// Result: only city is updated
+{
+  name: 'John',
+  address: {
+    street: '123 Main St',
+    city: 'Los Angeles',      // ✅ Updated
+    zipCode: '94102',          // ✅ Preserved
+    country: 'USA'             // ✅ Preserved
+  }
+}
+```
+
+<Info>
+Dot notation is the recommended way to update nested fields when you want to preserve other properties in the same object.
+</Info>
+
+## Basic Dot Notation Updates
+
+### Single Nested Field
+
+```typescript
+// Update only the city
+await userRepo.update('user-123', {
+  'address.city': 'New York'
+} as any);
+```
+
+### Multiple Nested Fields
+
+```typescript
+// Update multiple nested fields
+await userRepo.update('user-123', {
+  'address.city': 'Los Angeles',
+  'address.zipCode': '90001',
+  'address.state': 'CA'
+} as any);
+```
+
+### Mixed Updates
+
+```typescript
+// Combine top-level and nested updates
+await userRepo.update('user-123', {
+  name: 'John Doe',              // Top-level field
+  'address.city': 'New York',    // Nested field
+  'profile.verified': true       // Different nested object
+} as any);
+```
+
+<Note>
+TypeScript requires `as any` for dot notation keys since they're dynamic strings that don't match the type definition.
+</Note>
+
+## Deep Nested Updates
+
+### Three Levels Deep
+
+```typescript
+// Update deeply nested settings
+await userRepo.update('user-123', {
+  'profile.settings.notifications.email': true,
+  'profile.settings.notifications.sms': false,
+  'profile.settings.theme': 'dark'
+} as any);
+```
+
+### Creating Nested Structure
+
+Dot notation creates the nested structure if it doesn't exist.
+
+```typescript
+// Document doesn't have metadata field yet
+await userRepo.update('user-123', {
+  'metadata.preferences.language': 'en',
+  'metadata.preferences.timezone': 'UTC'
+} as any);
+
+// Result: nested structure is created
+{
+  // ... other fields
+  metadata: {
+    preferences: {
+      language: 'en',
+      timezone: 'UTC'
+    }
+  }
+}
+```
+
+## Bulk Updates with Dot Notation
+
+### Bulk Update Method
+
+```typescript
+await userRepo.bulkUpdate([
+  {
+    id: 'user-1',
+    data: {
+      'profile.verified': true,
+      'settings.notifications': false
+    } as any
+  },
+  {
+    id: 'user-2',
+    data: {
+      'profile.verified': true,
+      'profile.bio': 'Updated bio'
+    } as any
+  },
+  {
+    id: 'user-3',
+    data: {
+      'settings.theme': 'dark'
+    } as any
+  }
+]);
+```
+
+### Query Update with Dot Notation
+
+```typescript
+// Update nested fields for all matching documents
+const count = await userRepo.query()
+  .where('role', '==', 'admin')
+  .update({
+    'permissions.canDelete': true,
+    'permissions.canEdit': true,
+    'permissions.level': 'full'
+  } as any);
+
+console.log(`Updated ${count} admin users`);
+```
+
+## Transactions with Dot Notation
+
+### Basic Transaction Update
+
+```typescript
+await userRepo.runInTransaction(async (tx, repo) => {
+  // Read the document first (REQUIRED)
+  const user = await repo.getForUpdate(tx, 'user-123');
+  
+  if (!user) {
+    throw new Error('User not found');
+  }
+  
+  // Update with dot notation - pass existing data as third parameter
+  await repo.updateInTransaction(
+    tx,
+    'user-123',
+    {
+      'settings.theme': 'dark',
+      'profile.lastLogin': new Date().toISOString()
+    } as any,
+    user  // existingData parameter is REQUIRED for dot notation
+  );
+});
+```
+
+<Warning>
+**CRITICAL**: When using dot notation in transactions, you MUST:
+1. Call `getForUpdate()` first to read the document
+2. Pass the existing document data as the third parameter to `updateInTransaction()`
+
+Omitting the third parameter will throw an error.
+</Warning>
+
+### Transaction with Computed Values
+
+```typescript
+await userRepo.runInTransaction(async (tx, repo) => {
+  const user = await repo.getForUpdate(tx, 'user-123');
+  
+  if (!user) throw new Error('User not found');
+  
+  // Increment nested counter
+  const currentCount = user.stats?.loginCount || 0;
+  
+  await repo.updateInTransaction(
+    tx,
+    'user-123',
+    {
+      'stats.loginCount': currentCount + 1,
+      'stats.lastLogin': new Date().toISOString()
+    } as any,
+    user
+  );
+});
+```
+
+## Real-World Use Cases
+
+### User Preferences
+
+```typescript
+class UserPreferenceService {
+  async updateTheme(userId: string, theme: string) {
+    await userRepo.update(userId, {
+      'preferences.theme': theme,
+      'preferences.updatedAt': new Date().toISOString()
+    } as any);
+  }
+  
+  async updateNotifications(userId: string, settings: NotificationSettings) {
+    await userRepo.update(userId, {
+      'preferences.notifications.email': settings.email,
+      'preferences.notifications.push': settings.push,
+      'preferences.notifications.sms': settings.sms
+    } as any);
+  }
+}
+```
+
+### Nested Configuration Updates
+
+```typescript
+class ConfigService {
+  async updateFeatureFlag(feature: string, enabled: boolean) {
+    await configRepo.update('app-config', {
+      [`features.${feature}.enabled`]: enabled,
+      [`features.${feature}.updatedAt`]: new Date().toISOString()
+    } as any);
+  }
+  
+  async updateApiSettings(provider: string, settings: ApiSettings) {
+    await configRepo.update('integrations', {
+      [`apis.${provider}.apiKey`]: settings.apiKey,
+      [`apis.${provider}.enabled`]: settings.enabled,
+      [`apis.${provider}.rateLimit`]: settings.rateLimit
+    } as any);
+  }
+}
+```
+
+### Analytics Counters
+
+```typescript
+class AnalyticsService {
+  async incrementPageView(pageId: string) {
+    const page = await pageRepo.getById(pageId);
+    if (!page) throw new Error('Page not found');
+    
+    await pageRepo.update(pageId, {
+      'analytics.views': (page.analytics?.views || 0) + 1,
+      'analytics.lastViewed': new Date().toISOString()
+    } as any);
+  }
+  
+  async updateEngagement(postId: string, metrics: EngagementMetrics) {
+    await postRepo.update(postId, {
+      'analytics.likes': metrics.likes,
+      'analytics.shares': metrics.shares,
+      'analytics.comments': metrics.comments,
+      'analytics.updatedAt': new Date().toISOString()
+    } as any);
+  }
+}
+```
+
+### Order Workflow Updates
+
+```typescript
+class OrderService {
+  async updatePaymentStatus(
+    orderId: string,
+    status: string,
+    transactionId: string
+  ) {
+    await orderRepo.update(orderId, {
+      'workflow.payment.status': status,
+      'workflow.payment.transactionId': transactionId,
+      'workflow.payment.completedAt': new Date().toISOString()
+    } as any);
+  }
+  
+  async updateShippingStatus(
+    orderId: string,
+    status: string,
+    trackingNumber: string
+  ) {
+    await orderRepo.update(orderId, {
+      'workflow.fulfillment.status': status,
+      'workflow.fulfillment.trackingNumber': trackingNumber,
+      'workflow.fulfillment.shippedAt': new Date().toISOString()
+    } as any);
+  }
+}
+```
+
+### Address Updates
+
+```typescript
+class AddressService {
+  async updateShippingAddress(
+    userId: string,
+    updates: Partial<Address>
+  ) {
+    const addressUpdates: Record<string, any> = {};
+    
+    if (updates.street) {
+      addressUpdates['shippingAddress.street'] = updates.street;
+    }
+    if (updates.city) {
+      addressUpdates['shippingAddress.city'] = updates.city;
+    }
+    if (updates.state) {
+      addressUpdates['shippingAddress.state'] = updates.state;
+    }
+    if (updates.zipCode) {
+      addressUpdates['shippingAddress.zipCode'] = updates.zipCode;
+    }
+    
+    await userRepo.update(userId, addressUpdates as any);
+  }
+}
+```
+
+## Path Validation
+
+FirestoreORM validates dot notation paths to prevent common errors.
+
+### Valid Paths
+
+```typescript
+// ✅ Valid
+'address.city'
+'profile.settings.theme'
+'metadata.tags.primary'
+'stats.counters.views'
+```
+
+### Invalid Paths (Will Throw Errors)
+
+```typescript
+// ❌ Empty string
+'' // Error: "Dot notation path cannot be empty"
+
+// ❌ Starts with dot
+'.address.city' // Error: "Path cannot start or end with a dot"
+
+// ❌ Ends with dot
+'address.city.' // Error: "Path cannot start or end with a dot"
+
+// ❌ Consecutive dots (empty parts)
+'address..city' // Error: "Parts cannot be empty"
+```
+
+## Handling Special Values
+
+### Null Values
+
+Use `null` to explicitly clear a field.
+
+```typescript
+// Clear a nested field
+await userRepo.update('user-123', {
+  'address.apartment': null  // Field is set to null
+} as any);
+```
+
+### Undefined Values
+
+Undefined values are automatically filtered out (Firestore limitation).
+
+```typescript
+// Undefined is ignored
+await userRepo.update('user-123', {
+  'address.city': undefined  // Has no effect, original value preserved
+} as any);
+
+// Use null to clear instead
+await userRepo.update('user-123', {
+  'address.city': null  // Field is cleared
+} as any);
+```
+
+### Array and Object Values
+
+```typescript
+// Update with array
+await userRepo.update('user-123', {
+  'profile.tags': ['developer', 'typescript', 'firebase']
+} as any);
+
+// Update with object (replaces nested object at that path)
+await userRepo.update('user-123', {
+  'settings.notifications': {
+    email: true,
+    push: false,
+    sms: true
+  }
+} as any);
+```
+
+## Utility Functions
+
+FirestoreORM exports utility functions for working with dot notation.
+
+### Expand Dot Notation
+
+Convert flat dot notation to nested object.
+
+```typescript
+import { expandDotNotation } from '@spacelabstech/firestoreorm';
+
+const flat = {
+  'address.city': 'Los Angeles',
+  'address.zipCode': '90001',
+  name: 'John'
+};
+
+const nested = expandDotNotation(flat);
+// Result:
+// {
+//   address: {
+//     city: 'Los Angeles',
+//     zipCode: '90001'
+//   },
+//   name: 'John'
+// }
+```
+
+### Flatten to Dot Notation
+
+Convert nested object to flat dot notation.
+
+```typescript
+import { flattenToDotNotation } from '@spacelabstech/firestoreorm';
+
+const nested = {
+  address: {
+    city: 'Los Angeles',
+    zipCode: '90001'
+  },
+  name: 'John'
+};
+
+const flat = flattenToDotNotation(nested);
+// Result:
+// {
+//   'address.city': 'Los Angeles',
+//   'address.zipCode': '90001',
+//   name: 'John'
+// }
+```
+
+### Check for Dot Notation
+
+```typescript
+import { hasDotNotationKeys, isDotNotation } from '@spacelabstech/firestoreorm';
+
+const data = {
+  name: 'John',
+  'address.city': 'LA'
+};
+
+hasDotNotationKeys(data); // true
+isDotNotation('address.city'); // true
+isDotNotation('name'); // false
+```
+
+### Validate Dot Notation Path
+
+```typescript
+import { validateDotNotationPath } from '@spacelabstech/firestoreorm';
+
+try {
+  validateDotNotationPath('address.city'); // OK
+  validateDotNotationPath('address..city'); // Throws error
+} catch (error) {
+  console.log(error.message); // "Parts cannot be empty"
+}
+```
+
+## Performance Considerations
+
+### Dot Notation vs Regular Update
+
+```typescript
+// Dot notation: only specified fields updated
+await userRepo.update('user-123', {
+  'address.city': 'LA'
+} as any);
+// Cost: 1 read + 1 write
+// Bandwidth: Only the changed field is sent
+
+// Regular update: entire object replaced
+await userRepo.update('user-123', {
+  address: {
+    street: originalAddress.street,
+    city: 'LA',
+    zipCode: originalAddress.zipCode,
+    state: originalAddress.state,
+    country: originalAddress.country
+  }
+});
+// Cost: 1 read + 1 write (same)
+// Bandwidth: Entire address object sent
+```
+
+<Info>
+Both approaches cost the same in Firestore (1 write), but dot notation sends less data over the network and is less error-prone.
+</Info>
+
+## Common Patterns
+
+### Increment Nested Counter
+
+```typescript
+const doc = await repo.getById(docId);
+if (!doc) throw new Error('Not found');
+
+await repo.update(docId, {
+  'stats.views': (doc.stats?.views || 0) + 1,
+  'stats.lastViewed': new Date().toISOString()
+} as any);
+```
+
+### Toggle Nested Boolean
+
+```typescript
+const user = await userRepo.getById(userId);
+if (!user) throw new Error('User not found');
+
+await userRepo.update(userId, {
+  'settings.notifications.email': !user.settings?.notifications?.email
+} as any);
+```
+
+### Update Multiple Nested Objects
+
+```typescript
+await configRepo.update('app-settings', {
+  'features.darkMode.enabled': true,
+  'features.darkMode.autoSwitch': true,
+  'features.analytics.trackingId': 'GA-123456',
+  'features.analytics.enabled': true,
+  'updatedAt': new Date().toISOString()
+} as any);
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Use Dot Notation for Partial Nested Updates">
+    When you only need to update specific nested fields.
+    
+    ```typescript
+    // ✅ Good - preserves other address fields
+    await userRepo.update(userId, {
+      'address.city': 'NYC'
+    } as any);
+    
+    // ❌ Bad - loses street, zipCode, etc.
+    await userRepo.update(userId, {
+      address: { city: 'NYC' }
+    });
+    ```
+  </Step>
+  
+  <Step title="Use Regular Updates for Complete Replacement">
+    When you want to replace the entire nested object.
+    
+    ```typescript
+    // ✅ Good - intentionally replacing entire address
+    await userRepo.update(userId, {
+      address: newCompleteAddress
+    });
+    ```
+  </Step>
+  
+  <Step title="Keep Paths Readable">
+    Don't go too deep. Consider restructuring if paths get unwieldy.
+    
+    ```typescript
+    // ⚠️ Getting complex
+    'settings.preferences.advanced.developer.debugMode.enabled'
+    
+    // ✅ Better - restructure your data model
+    'developerSettings.debugMode'
+    ```
+  </Step>
+  
+  <Step title="Always Pass Existing Data in Transactions">
+    Required for dot notation to work correctly in transactions.
+    
+    ```typescript
+    await repo.runInTransaction(async (tx, repo) => {
+      const doc = await repo.getForUpdate(tx, id);
+      await repo.updateInTransaction(
+        tx,
+        id,
+        { 'nested.field': 'value' } as any,
+        doc  // ✅ Required!
+      );
+    });
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="CRUD Operations" icon="database" href="/guides/crud-operations">
+    Learn basic update operations
+  </Card>
+  <Card title="Bulk Operations" icon="layer-group" href="/guides/bulk-operations">
+    Use dot notation with bulk updates
+  </Card>
+  <Card title="Transactions" icon="lock" href="/guides/transactions">
+    Update nested fields atomically in transactions
+  </Card>
+  <Card title="API Reference" icon="code" href="/api-reference/repository/update">
+    See the complete update method documentation
+  </Card>
+</CardGroup>

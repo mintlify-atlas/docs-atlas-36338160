@@ -1,0 +1,613 @@
+---
+title: Error Handling
+description: Comprehensive guide to handling errors in FirestoreORM including validation, conflicts, and Firestore-specific errors
+---
+
+## Error Types
+
+FirestoreORM provides specialized error classes for common failure scenarios.
+
+### ValidationError
+
+Thrown when Zod schema validation fails during create or update operations.
+
+```typescript
+import { ValidationError } from '@spacelabstech/firestoreorm';
+
+try {
+  await userRepo.create({
+    name: '',           // Too short
+    email: 'not-email', // Invalid format
+    age: -5             // Negative number
+  });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.log('Validation failed:');
+    error.issues.forEach(issue => {
+      console.log(`${issue.path.join('.')}: ${issue.message}`);
+    });
+    // Output:
+    // name: String must contain at least 1 character(s)
+    // email: Invalid email address
+    // age: Number must be greater than 0
+  }
+}
+```
+
+<Note>
+**When it occurs:**
+- During `create()` - validates against full schema
+- During `update()` - validates against `schema.partial()` (all fields optional)
+- Before any Firestore write occurs (no wasted operations)
+</Note>
+
+### NotFoundError
+
+Thrown when a requested document doesn't exist.
+
+```typescript
+import { NotFoundError } from '@spacelabstech/firestoreorm';
+
+try {
+  const user = await userRepo.getById('non-existent-id');
+  
+  if (!user) {
+    throw new NotFoundError('User not found');
+  }
+  
+  // Or let update() throw it
+  await userRepo.update('non-existent-id', { name: 'John' });
+} catch (error) {
+  if (error instanceof NotFoundError) {
+    console.log('Document does not exist');
+    // Return 404 to client
+  }
+}
+```
+
+### ConflictError
+
+Thrown when an operation conflicts with existing data or business rules.
+
+```typescript
+import { ConflictError } from '@spacelabstech/firestoreorm';
+
+// Check uniqueness before creation
+tenantRepo.on('beforeCreate', async (tenant) => {
+  const existing = await tenantRepo.findByField('slug', tenant.slug);
+  
+  if (existing.length > 0) {
+    throw new ConflictError(`Tenant with slug '${tenant.slug}' already exists`);
+  }
+});
+
+try {
+  await tenantRepo.create({
+    name: 'Acme Corp',
+    slug: 'acme', // Already exists
+    // ...
+  });
+} catch (error) {
+  if (error instanceof ConflictError) {
+    console.log('Duplicate slug detected');
+    // Return 409 to client
+  }
+}
+```
+
+<Tip>
+Use `ConflictError` for:
+- Duplicate unique fields (email, username, slug)
+- Business rule violations (insufficient funds, seat limits)
+- State conflicts (can't ship a cancelled order)
+</Tip>
+
+### FirestoreIndexError
+
+Thrown when a query requires a composite index that doesn't exist.
+
+```typescript
+import { FirestoreIndexError } from '@spacelabstech/firestoreorm';
+
+try {
+  const results = await orderRepo.query()
+    .where('status', '==', 'pending')
+    .where('total', '>', 100)
+    .orderBy('createdAt', 'desc')
+    .get();
+} catch (error) {
+  if (error instanceof FirestoreIndexError) {
+    // Error includes link to create the index
+    console.log(error.toString());
+    // "Missing composite index for collection 'orders'.
+    //  Fields: status (==), total (>), createdAt (desc)
+    //  Create index: https://console.firebase.google.com/..."
+    
+    console.log('Index URL:', error.indexUrl);
+    console.log('Required fields:', error.fields);
+  }
+}
+```
+
+<Warning>
+**Development vs Production:**
+
+**Development:** Click the URL in the error message, create the index in Firebase Console, wait 1-2 minutes, then retry.
+
+**Production:** Create indexes before deployment using:
+- `firestore.indexes.json` file
+- Firebase CLI: `firebase deploy --only firestore:indexes`
+- CI/CD pipeline automation
+</Warning>
+
+## Express.js Error Handling
+
+### Using the Built-in Error Handler
+
+FirestoreORM includes a pre-built Express middleware that automatically maps errors to HTTP status codes.
+
+```typescript app.ts
+import express from 'express';
+import { errorHandler } from '@spacelabstech/firestoreorm';
+import userRoutes from './routes/user.routes';
+
+const app = express();
+
+app.use(express.json());
+app.use('/api', userRoutes);
+
+// Register error handler as LAST middleware
+app.use(errorHandler);
+
+app.listen(3000, () => {
+  console.log('Server running on port 3000');
+});
+```
+
+**Automatic Status Code Mapping:**
+
+| Error Type | HTTP Status | Response |
+|------------|-------------|----------|
+| `ValidationError` | 400 Bad Request | `{ error: 'Validation Error', details: [...] }` |
+| `NotFoundError` | 404 Not Found | `{ error: 'Not Found', message: '...' }` |
+| `ConflictError` | 409 Conflict | `{ error: 'Conflict', message: '...' }` |
+| `FirestoreIndexError` | 400 Bad Request | `{ error: 'Index Required', indexUrl: '...' }` |
+| Others | 500 Internal Server Error | `{ error: 'Internal Server Error' }` |
+
+### Route Error Handling
+
+```typescript routes/user.routes.ts
+import express from 'express';
+import { userRepo } from '../repositories/user.repository';
+import { NotFoundError } from '@spacelabstech/firestoreorm';
+
+const router = express.Router();
+
+// Create user
+router.post('/users', async (req, res, next) => {
+  try {
+    const user = await userRepo.create({
+      ...req.body,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    res.status(201).json(user);
+  } catch (error) {
+    next(error); // errorHandler middleware processes this
+  }
+});
+
+// Get user by ID
+router.get('/users/:id', async (req, res, next) => {
+  try {
+    const user = await userRepo.getById(req.params.id);
+    
+    if (!user) {
+      throw new NotFoundError(`User ${req.params.id} not found`);
+    }
+    
+    res.json(user);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Update user
+router.patch('/users/:id', async (req, res, next) => {
+  try {
+    const user = await userRepo.update(req.params.id, {
+      ...req.body,
+      updatedAt: new Date().toISOString()
+    });
+    res.json(user);
+  } catch (error) {
+    next(error);
+  }
+});
+
+export default router;
+```
+
+<Info>
+Always pass errors to `next(error)` instead of handling them directly in routes. This ensures consistent error responses across your API.
+</Info>
+
+## NestJS Error Handling
+
+### Custom Exception Filter
+
+```typescript filters/firestore-exception.filter.ts
+import { 
+  ExceptionFilter, 
+  Catch, 
+  ArgumentsHost, 
+  HttpStatus 
+} from '@nestjs/common';
+import { Response } from 'express';
+import { 
+  ValidationError, 
+  NotFoundError, 
+  ConflictError,
+  FirestoreIndexError
+} from '@spacelabstech/firestoreorm';
+
+@Catch(ValidationError, NotFoundError, ConflictError, FirestoreIndexError)
+export class FirestoreExceptionFilter implements ExceptionFilter {
+  catch(exception: any, host: ArgumentsHost) {
+    const ctx = host.switchToHttp();
+    const response = ctx.getResponse<Response>();
+
+    if (exception instanceof ValidationError) {
+      response.status(HttpStatus.BAD_REQUEST).json({
+        statusCode: HttpStatus.BAD_REQUEST,
+        error: 'Validation Error',
+        details: exception.issues
+      });
+    } else if (exception instanceof NotFoundError) {
+      response.status(HttpStatus.NOT_FOUND).json({
+        statusCode: HttpStatus.NOT_FOUND,
+        error: 'Not Found',
+        message: exception.message
+      });
+    } else if (exception instanceof ConflictError) {
+      response.status(HttpStatus.CONFLICT).json({
+        statusCode: HttpStatus.CONFLICT,
+        error: 'Conflict',
+        message: exception.message
+      });
+    } else if (exception instanceof FirestoreIndexError) {
+      response.status(HttpStatus.BAD_REQUEST).json({
+        statusCode: HttpStatus.BAD_REQUEST,
+        error: 'Index Required',
+        message: exception.message,
+        indexUrl: exception.indexUrl,
+        fields: exception.fields
+      });
+    }
+  }
+}
+```
+
+### Register Filter Globally
+
+```typescript main.ts
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import { FirestoreExceptionFilter } from './filters/firestore-exception.filter';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  
+  // Register global exception filter
+  app.useGlobalFilters(new FirestoreExceptionFilter());
+  
+  await app.listen(3000);
+}
+bootstrap();
+```
+
+### Service Layer Error Handling
+
+```typescript modules/user/user.service.ts
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { UserRepository } from './user.repository';
+import { NotFoundError, ConflictError } from '@spacelabstech/firestoreorm';
+
+@Injectable()
+export class UserService {
+  constructor(private userRepository: UserRepository) {}
+
+  async findOne(id: string) {
+    const user = await this.userRepository.findById(id);
+    
+    if (!user) {
+      throw new NotFoundException(`User with ID ${id} not found`);
+    }
+    
+    return user;
+  }
+
+  async update(id: string, dto: UpdateUserDto) {
+    try {
+      return await this.userRepository.update(id, dto);
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw new NotFoundException(error.message);
+      }
+      throw error;
+    }
+  }
+
+  async createWithUniqueEmail(dto: CreateUserDto) {
+    // Check for duplicate email
+    const existing = await this.userRepository
+      .query()
+      .where('email', '==', dto.email)
+      .getOne();
+    
+    if (existing) {
+      throw new ConflictError(`Email ${dto.email} is already registered`);
+    }
+    
+    return this.userRepository.create(dto);
+  }
+}
+```
+
+## Validation Error Handling
+
+### Detailed Validation Messages
+
+```typescript
+import { ValidationError } from '@spacelabstech/firestoreorm';
+import { z } from 'zod';
+
+const userSchema = z.object({
+  name: z.string().min(2, 'Name must be at least 2 characters'),
+  email: z.string().email('Invalid email format'),
+  age: z.number().int().positive('Age must be a positive number').optional(),
+  password: z.string().min(8, 'Password must be at least 8 characters')
+});
+
+try {
+  await userRepo.create({
+    name: 'A',
+    email: 'invalid',
+    age: -1,
+    password: 'short'
+  });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    // Format for API response
+    const formattedErrors = error.issues.reduce((acc, issue) => {
+      const field = issue.path.join('.');
+      acc[field] = issue.message;
+      return acc;
+    }, {} as Record<string, string>);
+    
+    console.log(formattedErrors);
+    // {
+    //   name: 'Name must be at least 2 characters',
+    //   email: 'Invalid email format',
+    //   age: 'Age must be a positive number',
+    //   password: 'Password must be at least 8 characters'
+    // }
+  }
+}
+```
+
+### Partial Update Validation
+
+```typescript
+// Updates validate against schema.partial() - all fields optional
+try {
+  await userRepo.update('user-123', {
+    email: 'invalid-email' // Only this field is validated
+  });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.log(error.issues);
+    // [{ path: ['email'], message: 'Invalid email format' }]
+  }
+}
+
+// Valid partial update
+await userRepo.update('user-123', {
+  name: 'Updated Name' // Other fields not required
+});
+```
+
+## Transaction Error Handling
+
+### Transaction Failures
+
+```typescript
+import { ConflictError } from '@spacelabstech/firestoreorm';
+
+try {
+  await accountRepo.runInTransaction(async (tx, repo) => {
+    const from = await repo.getForUpdate(tx, fromAccountId);
+    const to = await repo.getForUpdate(tx, toAccountId);
+    
+    if (!from || !to) {
+      throw new NotFoundError('Account not found');
+    }
+    
+    if (from.balance < amount) {
+      throw new ConflictError('Insufficient funds');
+    }
+    
+    await repo.updateInTransaction(tx, fromAccountId, {
+      balance: from.balance - amount
+    });
+    
+    await repo.updateInTransaction(tx, toAccountId, {
+      balance: to.balance + amount
+    });
+  });
+} catch (error) {
+  if (error instanceof ConflictError) {
+    console.log('Transfer failed:', error.message);
+  } else if (error instanceof NotFoundError) {
+    console.log('Invalid account:', error.message);
+  } else {
+    console.log('Transaction failed:', error);
+  }
+}
+```
+
+<Warning>
+**Transaction Rollback:** If any error is thrown inside a transaction, Firestore automatically rolls back all changes. Make sure to throw errors for invalid states to prevent partial updates.
+</Warning>
+
+## Hook-Based Validation
+
+### Business Rule Validation
+
+```typescript
+// Validate before operations
+orderRepo.on('beforeUpdate', (data) => {
+  if (data.status === 'shipped' && !data.trackingNumber) {
+    throw new ValidationError({
+      issues: [{
+        path: ['trackingNumber'],
+        message: 'Tracking number required for shipped orders'
+      }]
+    });
+  }
+});
+
+orderRepo.on('beforeCreate', async (order) => {
+  // Check inventory
+  for (const item of order.items) {
+    const available = await inventoryService.checkStock(
+      item.productId,
+      item.quantity
+    );
+    
+    if (!available) {
+      throw new ConflictError(
+        `Insufficient stock for ${item.productName}`
+      );
+    }
+  }
+});
+```
+
+### Uniqueness Validation
+
+```typescript
+tenantRepo.on('beforeCreate', async (tenant) => {
+  const existing = await tenantRepo.findByField('slug', tenant.slug);
+  
+  if (existing.length > 0) {
+    throw new ConflictError(
+      `Tenant with slug '${tenant.slug}' already exists`
+    );
+  }
+});
+
+userRepo.on('beforeCreate', async (user) => {
+  const existing = await userRepo
+    .query()
+    .where('email', '==', user.email)
+    .getOne();
+  
+  if (existing) {
+    throw new ConflictError(
+      `Email ${user.email} is already registered`
+    );
+  }
+});
+```
+
+<Tip>
+Use `beforeCreate` and `beforeUpdate` hooks for validation that requires database queries. This keeps validation logic centralized and ensures it runs for all create/update operations.
+</Tip>
+
+## Logging and Monitoring
+
+### Error Logging with Context
+
+```typescript
+import { logger } from './logger';
+
+try {
+  await userRepo.update(userId, updateData);
+} catch (error) {
+  // Log with context
+  logger.error('Failed to update user', {
+    userId,
+    updateData,
+    error: error instanceof Error ? error.message : 'Unknown error',
+    stack: error instanceof Error ? error.stack : undefined,
+    timestamp: new Date().toISOString()
+  });
+  
+  // Re-throw for upstream handling
+  throw error;
+}
+```
+
+### Centralized Error Tracking
+
+```typescript
+import * as Sentry from '@sentry/node';
+
+app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+  // Log to Sentry for all errors
+  Sentry.captureException(err, {
+    tags: {
+      errorType: err.constructor.name,
+      route: req.path
+    },
+    extra: {
+      body: req.body,
+      params: req.params,
+      query: req.query
+    }
+  });
+  
+  // Then handle with FirestoreORM error handler
+  errorHandler(err, req, res, next);
+});
+```
+
+## Testing Error Scenarios
+
+### Unit Testing Errors
+
+```typescript
+import { ValidationError, NotFoundError } from '@spacelabstech/firestoreorm';
+
+describe('UserService', () => {
+  it('should throw ValidationError for invalid email', async () => {
+    await expect(
+      userService.create({
+        name: 'John',
+        email: 'invalid-email'
+      })
+    ).rejects.toThrow(ValidationError);
+  });
+  
+  it('should throw NotFoundError when user does not exist', async () => {
+    await expect(
+      userService.findOne('non-existent-id')
+    ).rejects.toThrow(NotFoundError);
+  });
+  
+  it('should throw ConflictError for duplicate email', async () => {
+    await userService.create({
+      name: 'John',
+      email: 'john@example.com'
+    });
+    
+    await expect(
+      userService.create({
+        name: 'Jane',
+        email: 'john@example.com'
+      })
+    ).rejects.toThrow(ConflictError);
+  });
+});
+```
